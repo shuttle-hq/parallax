@@ -1,93 +1,152 @@
-![parallax ci/cd](https://github.com/openquery-io/core-private/workflows/parallax%20ci/cd/badge.svg) ![parallax tests](https://github.com/openquery-io/core-private/workflows/parallax%20tests/badge.svg) [![version: 0.1](https://img.shields.io/badge/version-0.1-orange.svg)](./) [![license: BSL1.1](https://img.shields.io/badge/license-BSL1.1-green.svg)](./LICENSE)
+![parallax ci/cd](https://github.com/openquery-io/core/workflows/parallax%20ci/cd/badge.svg) ![parallax tests](https://github.com/openquery-io/core/workflows/parallax%20tests/badge.svg) [![version: 0.1](https://img.shields.io/badge/version-0.1-orange.svg)](./) [![license: BSL1.1](https://img.shields.io/badge/license-BSL1.1-green.svg)](./LICENSE)
 
 # Parallax
 
-**Parallax** is a distributed query engine for private data. It is:
+[`Parallax`] is a distributed query engine for private/sensitive data. Its main features are:
 
-- **Privacy as code**: It lets you write privacy policies for your data subjects in a simple YAML manifest and enforces them rigorously.
-- **Distributed**: It scales as much as the database where your data is.
-- **Declarative**: You state what you need anonymized and it figures out how to do it. With no unpredictable side-effect and with complete reproducibility.
+- **Privacy as Code**: It lets you write privacy policies in a simple YAML manifest and enforces them rigorously at query-time.
+- **Horizontally Scalable**: It scales as much as the database where your data is.
+- **Declarative**: You state what you need and it figures out how to do it. With no unpredictable side-effect and with complete reproducibility.
 
-Check out an [example manifest](example/manifest/london_bicycles.yaml) to see what we mean.
+At a high-level, [`Parallax`] works by recursively pattern-matching and transforming input user queries to adhere to the administrator's policies.
 
-# Getting Started
+This is what a typical manifest for a dataset looks like this:
+```yaml
+- dataset:
+    name: "safe_dataset"
 
-The fastest way to get hacking with Parallax is to run it straight from our distributed image
+    data:
+    - resource.backend.big_query.london_bicycles.data["cycle_hire"]
+    - resource.backend.big_query.london_bicycles.data["cycle_stations"]
+
+    policy_bindings:
+    - name: "default_view"
+      groups:
+      - resource.group.wheel
+      policies:
+      - policy.whitelist.abstract_trips_are_ok
+      - policy.obfuscate.station_names_should_be_obfuscated
+      - policy.obfuscate.names_should_be_obfuscated
+      - policy.obfuscate.locations_should_be_obfuscated
+      priority: 10
+    
+    policies:
+    - whitelist:
+        name: "abstract_trips_are_ok"
+        fields:
+        - "start_date"
+        - "end_date"
+        - "start_station_id"
+        - "end_station_id"
+        - "rental_id"
+    - obfuscate:
+        name: "station_names_should_be_obfuscated"
+        fields:
+        - "start_station_name"
+        - "end_station_name"
+    - obfuscate:
+        name: "names_should_be_obfuscated"
+        fields:
+        - "name"
+    - obfuscate:
+        name: "locations_should_be_obfuscated"
+        fields:
+        - "longitude"
+        - "latitude"
 ```
-docker run -it --rm eu.gcr.io/openquery/parallax
+A full end-to-end working example using this manifest is shown below.
+
+## Getting started
+
+The fastest way to get hacking with [`Parallax`] is to run it straight from our offical containers registry
+```console
+$ docker run -it --rm eu.gcr.io/openquery/parallax
 ```
-The image runs a single `parallax-worker` node in the background (alongside a small redis box, which we use as a basic transaction database)  and lets you issue commands against it using the `parallax` command-line interface. The first thing you will want to do is initialize the deployment with
-```
-parallax init
+The image will start a single [`parallax-worker`] node in the background. This lets you issue commands against it using the `parallax` CLI. The first thing you will want to do is initialize the deployment with
+```console
+root@xxxxxxxx:/opt/work# parallax init
 ```
 which will configure an initial cluster state for us. That's it! We're up and running with the basics.
 
-Should you wish to quickly onboard some data so we can start doing some queries, the easiest is to use the example manifests under [example/manifest/](example/manifest/).
+Should you wish to quickly onboard some data so we can start doing some queries, the easiest is to use the example manifests under [`example/manifest`]. In the rest of this guide we'll walk through that.
 
-In this guide, we'll link up with a public dataset on BigQuery. For this part you will need a [service account key](https://cloud.google.com/iam/docs/service-accounts) for GCP handy so that Parallax can authenticate to run queries on the data on your behalf. That service account will need [write access](https://cloud.google.com/bigquery/docs/access-control-primitive-roles) to a BigQuery dataset so Parallax has somewhere to store staging artifacts. The data in the examples average ~5gb in size so you should comfortably stay within the [BigQuery free-tier](https://cloud.google.com/bigquery/pricing) of 1GB (at the time of writing this). 
+In the example we will link up with a public dataset on BigQuery. Of course, it does not need any anonymization or privacy features, but it will be enough to demonstrate the most basic features of [`Parallax`]. For this part you will need a [Service Account Key](https://cloud.google.com/iam/docs/service-accounts) for Google Cloud Platform (GCP) so that [`Parallax`] can authenticate with GCP to run queries on your behalf. That service account will need [write access](https://cloud.google.com/bigquery/docs/access-control-primitive-roles) to a blank BigQuery dataset (called a 'staging' dataset) so that [`Parallax`] can store staging artifacts. The queries in this example never exceed 5gb in size so you should comfortably stay within the [BigQuery free-tier](https://cloud.google.com/bigquery/pricing) of 1TiB at the time of writing this.
 
-Let's use the [london_bicycles](https://console.cloud.google.com/marketplace/details/greater-london-authority/london-bicycles?filter=solution-type:dataset&id=95374cac-2834-4fa2-a71f-fc033ccb5ce4) dataset for which we have a made a preset collection of example policies in [example/manifest/london_bicycles.yaml](example/manifest/london_bicycles.yaml). We first need to get the current state of the cluster stored in a file before we can add the dataset specific entries. For this we run
-```bash
-parallax --disable-tls gov fetch --output=state.yaml
+Let's use the public BigQuery [`london_bicycles`] dataset, which has some data on individual usage of rental bikes in London between 2015 and mid 2017. We have already made a simple set of policies for it [here](example/manifest/london_bicycles.yaml). That manifest declares a dataset "safe_dataset" consisting of two underlying BigQuery tables: `london_bicycles.cycle_hire` and `london_bicycles.cycle_stations`. After this manifest is applied to [`Parallax`], these tables will show up to be queried under `safe_dataset.cycle_hire` and `safe_dataset.cycle_stations`. The policies in the manifest ensure that only some select columns (e.g. `start_date`, `start_station_id`, etc) are allowed to be queried as-is through [`Parallax`], while some values must be obfuscated (e.g. `start_station_name`, etc) before being released to the user. All the columns not mentioned explicitly in the manifest will cause the query to be denied (the default is to not reveal anything).
+
+The very first thing we need to do is get the current configuration state of [`Parallax`] checked out in the working directory. [`Parallax`] is completely declarative, a bit like [Terraform](https://www.terraform.io/) (we do not use HCL currently but we definitely want to). So the workflow is to add/modify/remove items from a collection of local manifest files, then run `parallax gov apply` to commit the changes back to [`Parallax`]. 
+
+To check out the entire state in the file `state.yaml` we run
+```console
+root@xxxxxxxx:/opt/work# parallax --disable-tls gov fetch --output=state.yaml
 ```
-which will create the file `state.yaml` which contains a manifest of all the resources under Parallax's control (at this point just the `root` user and an administrators' group called `wheel`). Note that we have to use `--disable-tls` as the worker node on the image has TLS disabled by default.
-
-Copy your service account key into the running container (see [docker cp](https://docs.docker.com/engine/reference/commandline/cp/)) and set the following environment variables
-```bash
-export SERVICE_ACCOUNT_KEY={where my key is}
-export STAGING_PROJECT_ID={a GCP project_id}
-export STAGING_DATASET_ID={a GCP dataset_id}
+At this point the `state.yaml` file will look something like this:
+```yaml
+- group:
+    name: wheel
+    members:
+      - resource.user.root
+- user:
+    name: root
+    email: ""
+    public_keys:
+      - "{SOME PEM ENCODED PUBLIC KEY}"
+    auth_provider: ~
+    primary_group: resource.group.wheel
+    super_user: true
 ```
-We can then append the example manifest to our state with
-```bash
-curl https://raw.githubusercontent.com/openquery-io/core/master/parallax/example/manifest/london_bicycles.yaml |\
+So it only contains a `root` user and an administrators group called `wheel`. Both were generated by our first call to `parallax init`. Note that we had to use the `--disable-tls` flag as the worker node on the image has TLS disabled by default.
+
+Now copy your service account key into the running container (see [docker cp](https://docs.docker.com/engine/reference/commandline/cp/)) and set the following environment variables
+```console
+root@xxxxxxxx:/opt/work# export SERVICE_ACCOUNT_KEY={where my key is}
+root@xxxxxxxx:/opt/work# export STAGING_PROJECT_ID={a GCP project_id}
+root@xxxxxxxx:/opt/work# export STAGING_DATASET_ID={a GCP dataset_id}
+```
+We append the example manifest to our existing `state.yaml` with something like
+```console
+root@xxxxxxxx:/opt/work# curl https://raw.githubusercontent.com/openquery-io/core/master/parallax/example/manifest/london_bicycles.yaml |\
     envsubst >> state.yaml
 ```
-Finally we have to update the state of Parallax so that it uses the new manifest. This is done with
-```bash
-parallax --disable-tls gov apply
+Finally we have to apply the new manifest back to [`Parallax`] so that it actually uses it. This can be done with
+```console
+root@xxxxxxxx:/opt/work# parallax --disable-tls gov apply
 ```
-and we're done! we can start querying the protected dataset. Queries are managed via the `jobs` subcommand. For example
-```bash
-cat<<EOF | parallax jobs insert
-SELECT start_station_id, COUNT(rental_id) 
+We can then start running SQL queries to the protected dataset. Queries are managed via the `parallax jobs` subcommand. For example
+```console
+root@xxxxxxxx:/opt/work# cat<<EOF | parallax --disable-tls jobs insert
+SELECT start_station_id, start_station_name
 FROM safe_dataset.cycle_hire
-GROUP BY start_station_id
 EOF
 ```
-We can find out the state of submitted jobs with `parallax jobs list` and `parallax jobs get`. When it is done we can fetch the result as a csv with
-```bash
-parallax jobs fetch {JOB_ID} --format=csv
+We can find out the state of submitted jobs with `parallax jobs list` and `parallax jobs get`. When it is done (should only take a few seconds, depending on BigQuery's mood) we can fetch the result as a csv with
+```console
+root@xxxxxxxx:/opt/work# parallax jobs fetch {JOB_ID} --format=csv
 ```
-The `init` command we ran at the very beginning also set the corresponding credentials for the CLI. These can be managed with the `list` subcommand
-```bash
-parallax --disable-tls auth list
-```
-All credentials get stored under `$PARALLAX_HOME` (by default `~/.config/parallax`).
 
-# Building Parallax
+## Building Parallax
 
 You will first need to clone this repository locally, including all the submodules with,
-```bash
-git clone --recursive git@github.com:openquery-io/core.git openquery-core
+```console
+$ git clone --recursive git@github.com:openquery-io/core.git openquery-core
 ```
 
-## Building in Docker
+### Building in Docker
 The easiest is to build the whole thing in Docker. Simply navigate to the root of the `core` repository and run 
-```bash
-docker build -f parallax/docker/Dockerfile.build .
+```console
+$ docker build -f parallax/docker/Dockerfile.build .
 ```
 
-## Building locally
-Navigate to `parallax/` and run `cargo build`. Building Parallax requires Rust nightly.
+### Building locally
+Run `cargo build` in this workspace. Building [`Parallax`] currently requires Rust nightly.
 
-# Running tests
+## Running tests
 
-Most tests can be run locally as usual with `cargo test`. Some will require additional credentials to query which by default have to supplied by filling in the `secret/` folder at the root of the repository (currently used by the BigQuery backend looking for a GCP service account key to run under). The easiest way to find out what is missing is trying to run them and filling them in as required. We're actually working on a solution to make these publically runnable using our credentials so hang tight!
+Most tests can be run locally as usual with `cargo test`. Some will require additional credentials to query which by default have to supplied by filling in a `secret/` folder at the root of the repository (currently used by the BigQuery backend looking for a GCP service account key to run under). The easiest way to find out what is missing is trying to run them and filling them in as required. We're actually working on a solution to make these publically runnable using our credentials so hang tight!
 
 Apart from that you will need a quick and dirty Redis box for integration tests. This can be done simply by running off the official Redis docker image. For example:
-```bash
-docker run -it --rm -p 6379:6379 redis
+```console
+$ docker run -it --rm -p 6379:6379 redis
 ```
 
 ## Contributing
@@ -102,7 +161,11 @@ This project is licensed under the [BSL license](LICENSE).
 
 ### Contribution
 
-Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in Parallax by you, shall be licensed as [BSL license](LICENSE), without any additional
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in Parallax by you, shall be licensed as [BSL license](LICENSE), without any additional
 terms or conditions.
 
+
+[`Parallax`]: https://github.com/openquery-io/core/tree/master/parallax
+[`parallax-worker`]: ./worker
+[`example/manifest`]: ./example/manifest
+[`london_bicycles`]: https://console.cloud.google.com/marketplace/details/greater-london-authority/london-bicycles?filter=solution-type:dataset&id=95374cac-2834-4fa2-a71f-fc033ccb5ce4
