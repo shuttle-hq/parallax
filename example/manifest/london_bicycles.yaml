@@ -1,0 +1,50 @@
+
+
+- backend:
+    big_query:
+      name: "london_bicycles"
+      service_account_key: $SERVICE_ACCOUNT_KEY
+      project_id: "bigquery-public-data"
+      dataset_id: "london_bicycles"
+      staging_project_id: $STAGING_PROJECT_ID
+      staging_dataset_id: $STAGING_DATASET_ID
+
+- dataset:
+    name: "safe_dataset"
+    data:
+    - resource.backend.big_query.london_bicycles.data["cycle_hire"]
+    - resource.backend.big_query.london_bicycles.data["cycle_stations"]
+    entities: []
+    policy_bindings:
+    - name: "default_view"
+      groups:
+      - resource.group.wheel
+      policies:
+      - policy.whitelist.abstract_trips_are_ok
+      - policy.obfuscate.station_names_should_be_obfuscated
+      - policy.obfuscate.names_should_be_obfuscated
+      - policy.obfuscate.locations_should_be_obfuscated
+      priority: 10
+    policies:
+    - whitelist:
+        name: "abstract_trips_are_ok"
+        fields:
+        - "start_date"
+        - "end_date"
+        - "start_station_id"
+        - "end_station_id"
+        - "rental_id"
+    - obfuscate:
+        name: "station_names_should_be_obfuscated"
+        fields:
+        - "start_station_name"
+        - "end_station_name"
+    - obfuscate:
+        name: "names_should_be_obfuscated"
+        fields:
+        - "name"
+    - obfuscate:
+        name: "locations_should_be_obfuscated"
+        fields:
+        - "longitude"
+        - "latitude"

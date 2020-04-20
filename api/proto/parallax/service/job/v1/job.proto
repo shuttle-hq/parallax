@@ -1,0 +1,155 @@
+syntax = "proto3";
+
+package parallax.service.job.v1;
+
+import "google/api/annotations.proto";
+
+import "parallax/type/error/v1/error.proto";
+
+service JobService {
+  rpc GetJobOutputSchema(GetJobOutputSchemaRequest) returns (GetJobOutputSchemaResponse) {
+    option (google.api.http) = {
+      get: "/v1/jobs/{jobId}/output/schema"
+    };
+  }
+
+  rpc GetJobOutputRows(GetJobOutputRowsRequest) returns (stream GetJobOutputRowsResponse) {
+    option (google.api.http) = {
+      get: "/v1/jobs/{jobId}/output/rows"
+    };
+  }
+
+  rpc InsertJob(InsertJobRequest) returns (InsertJobResponse) {
+    option (google.api.http) = {
+      post: "/v1/jobs"
+    };
+  }
+
+  rpc GetJob(GetJobRequest) returns (GetJobResponse) {
+    option (google.api.http) = {
+      get: "/v1/jobs/{jobId}"
+    };
+  }
+
+  rpc CancelJob(CancelJobRequest) returns (CancelJobResponse) {
+    option (google.api.http) = {
+      post: "/v1/jobs/{jobId}/cancel"
+    };
+  }
+}
+
+message GetJobOutputSchemaRequest {
+  // The id of the job whose output is requested.
+  string jobId = 1;
+}
+
+message GetJobOutputSchemaResponse {
+  ArrowSchema arrow_schema = 1;
+}
+
+message GetJobOutputRowsRequest {
+  // The id of the job whose output is requested.
+  string jobId = 1;
+}
+
+message GetJobOutputRowsResponse {
+  ArrowRecordBatch arrow_record_batch = 1;
+}
+
+message InsertJobRequest {
+  // The initial state of the job to insert.
+  Job job = 1;
+}
+
+message InsertJobResponse {
+  // The initialized state of the job after insertion.
+  Job job = 1;
+}
+
+message GetJobRequest {
+  // The id of the job to get.
+  string jobId = 1;
+}
+
+message GetJobResponse {
+  // The most current state of the job.
+  Job job = 1;
+}
+
+message CancelJobRequest {
+  // The id of the job to cancel.
+  string jobId = 1;
+}
+
+message CancelJobResponse {
+  // The job's state at the time of cancellation. Note that because jobs can only
+  // be interrupted at specific stages in their existence, there might still be
+  // side-effects occurring in the background after this response is received.
+  Job job = 1;
+}
+
+message Job {
+  // A unique identifier for this job. When inserting a new
+  // job, this should be empty.
+  string id = 1;
+
+  // The user who initiated this job item.
+  string user= 2;
+
+  // The query that this job is fulfilling.
+  string query = 3;
+
+  // The status of this job item.
+  JobStatus status = 4;
+
+  // The insertion timestamp of this job item.
+  string timestamp = 5;
+}
+
+message JobStatus {
+  enum JobState {
+    // Should never be used.
+    UNKNOWN = 0;
+
+    // The job is currently awaiting an execution slot.
+    PENDING = 1;
+
+    // The job has been picked up for execution and
+    // is currently making progress.
+    RUNNING = 2;
+
+    // The job has finished execution and is now dead.
+    DONE = 3;
+  }
+
+  // A keyword defining the current state of this job.
+  JobState state = 1;
+
+  // The last error encountered while executing (if any).
+  // The presence of this field indicates the job has not
+  // completed successfully.
+  type.error.v1.Error final_error = 2;
+
+  // All the errors that were encountered in execution.
+  repeated type.error.v1.Error errors = 3;
+}
+
+// Arrow schema as specified in
+// https://arrow.apache.org/docs/python/api/datatypes.html
+// and serialized to bytes using IPC:
+// https://arrow.apache.org/docs/ipc.html.
+//
+// See code samples on how this message can be deserialized.
+message ArrowSchema {
+  // IPC serialized Arrow schema.
+  bytes serialized_schema = 1;
+}
+
+// Arrow RecordBatch.
+message ArrowRecordBatch {
+  // IPC-serialized Arrow RecordBatch.
+  bytes serialized_record_batch = 1;
+
+  // The count of rows in `serialized_record_batch`.
+  int64 row_count = 2;
+}

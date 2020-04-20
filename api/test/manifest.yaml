@@ -1,0 +1,48 @@
+- user:
+    name: "user1"
+    email: "user1@company.com"
+    public_keys:
+    - "AKEY"
+    primary_group: resource.group.group1
+
+- group:
+    name: "group1"
+    members:
+    - resource.user.user1
+
+- backend:
+    big_query:
+      name: "a_bigquery_backend"
+      service_account_key: "AKEY"
+      project_id: "a-gcp-project"
+      dataset_id: "a-dataset"
+      staging_project_id: "staging-project"
+      staging_dataset_id: "staging-dataset"
+      data:
+      - table_data:
+          name: "a_table"
+          source: self
+          schema:
+            name: "a_bigquery_table"
+            columns:
+            - name: "username"
+              ty: STRING
+              mode: NULLABLE
+
+- dataset:
+    name: "a_dataset"
+    data:
+    - resource.backend.big_query.a_bigquery_backend.data.table_data.a_table
+    entities: []
+    policy_bindings:
+    - name: "group1_sees_username"
+      groups:
+      - resource.group.group1
+      policies:
+      - policy.whitelist.username_is_whitelisted
+      priority: 10
+    policies:
+    - whitelist:
+        name: "username_is_whitelisted"
+        fields:
+        - "a_table.username"

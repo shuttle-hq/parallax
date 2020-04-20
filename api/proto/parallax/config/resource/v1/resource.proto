@@ -1,0 +1,244 @@
+syntax = "proto3";
+
+package parallax.config.resource.v1;
+
+/// A KMS (key management system).
+message Kms {
+  oneof kms {
+    Vault vault = 2;
+  }
+}
+
+message Vault {
+  /// The name of this vault.
+  string name = 1;
+  reserved 2 to 5;
+
+  // host of vault
+  string host = 6;
+  // port of vault
+  uint32 port = 7;
+  // path of root credentials to unlock and login as root to vault
+  string root = 8;
+}
+
+/// A secret stored in a KMS. It enables users to store sensitive credentials to
+/// third-party backends in a securely managed environment and not to keep them
+/// under version control as part of the manifest.
+message Secret {
+  /// The name of this secret.
+  string name = 1;
+  reserved 2 to 5;
+
+  /// (optional) The KMS to use. Defaults to Vault.
+  string kms = 6;
+  /// (optional) The plain to be stored in the given KMS.
+  string plainText = 7;
+}
+
+/// A user. Users are identities under which queries can be issued.
+message User {
+  /// The name of this user.
+  string name = 1;
+  reserved 2 to 5;
+
+  /// (optional) The identifying email for the user.
+  string email = 6;
+  /// (optional) The collection of base64 encoded PKCS8 RS256 public keys to accept auth token requests for.
+  repeated string publicKeys = 7;
+  /// (optional) The authentication provider to use to credential the user.
+  /// [Feature currently not supported.]
+  AuthProvider authProvider = 8;
+
+  string primaryGroup = 9;
+
+  bool superUser = 10;
+}
+
+/// An authentication provider.
+message LdapAuthProvider {
+  /// The name of this ldap provider.
+  string name = 1;
+  reserved 2 to 5;
+
+  /// (required) The host at which to find this ldap provider.
+  string host = 6;
+  /// (required) The port at which to find this ldap provider.
+  uint32 port = 7;
+  string username = 8;
+  /// (optional) The uri of the secret storing the password for this resource.
+  string password = 9;
+}
+
+message AuthProvider {
+  oneof authProvider {
+    LdapAuthProvider ldap = 1;
+  }
+}
+
+message Group {
+  /// The name of this group.
+  string name = 1;
+  reserved 2 to 5;
+
+  repeated string members = 6;
+}
+
+message BigQueryBackend {
+  /// The name of this BigQuery backend.
+  string name = 1;
+  reserved 2 to 5;
+
+  string serviceAccountKey = 6;
+  string projectId = 7;
+  string datasetId = 8;
+
+  string stagingProjectId = 9;
+  string stagingDatasetId = 10;
+}
+
+message DrillBackend {
+  /// The name of this Drill backend.
+  string name = 1;
+  reserved 2 to 5;
+
+  string host = 6;
+  uint32 port = 7;
+  string username = 8;
+  string password = 9;
+}
+
+message MongoBackend {
+  /// The name of this Mongo backend.
+  string name = 1;
+  reserved 2 to 5;
+
+  string host = 6;
+  uint32 port = 7;
+  string database = 8;
+  string username = 9;
+  string password = 10;
+}
+
+message Backend {
+  oneof backend {
+    BigQueryBackend bigQuery = 1;
+    DrillBackend drill = 2;
+    MongoBackend mongo = 3;
+  }
+}
+
+message ColumnSchema {
+  string name = 1;
+  reserved 2 to 5;
+
+  string ty = 6;
+  string mode = 7;
+}
+
+message TableSchema {
+  string name = 1;
+  reserved 2 to 5;
+
+  repeated ColumnSchema columns = 6;
+}
+
+message TableData {
+  /// The name of this table data.
+  string name = 1;
+  reserved 2 to 5;
+
+  string source = 6;
+
+  TableSchema schema = 7;
+}
+
+message CollectionData {
+  /// The name of this collection data.
+  string name = 1;
+  reserved 2 to 5;
+
+  string source = 6;
+}
+
+message Data {
+  oneof data {
+    TableData table = 1;
+    CollectionData collection = 2;
+  }
+}
+
+message Dataset {
+  /// The name of this dataset.
+  string name = 1;
+  reserved 2 to 5;
+
+  repeated string data = 6;
+  repeated Entity entities = 7;
+  repeated Policy policies = 8;
+  repeated PolicyBinding policyBindings = 9;
+}
+
+message Entity {
+  /// The name of this entity.
+  string name = 1;
+  reserved 2 to 5;
+
+  repeated string fields = 6;
+}
+
+message Policy {
+  oneof policy {
+    WhitelistPolicy whitelist = 1;
+    HashPolicy hash = 2;
+    ObfuscatePolicy obfuscate = 3;
+  }
+}
+
+message WhitelistPolicy {
+  /// The name of this whitelist policy.
+  string name = 1;
+  reserved 2 to 5;
+
+  repeated string fields = 6;
+}
+
+message HashPolicy {
+  /// The name of this whitelist policy.
+  string name = 1;
+  reserved 2 to 5;
+
+  repeated string fields = 6;
+
+  bytes salt = 7;
+}
+
+message ObfuscatePolicy {
+  /// The name of this whitelist policy.
+  string name = 1;
+  reserved 2 to 5;
+
+  repeated string fields = 6;
+}
+
+message PolicyBinding {
+  /// The name of this policy binding.
+  string name = 1;
+  reserved 2 to 5;
+
+  repeated string groups = 6;
+  repeated string policies = 7;
+  uint64 priority = 8;
+}
+
+message Resource {
+  oneof resource {
+    Kms kms = 2;
+    Secret secret = 3;
+    User user = 4;
+    AuthProvider authProvider = 5;
+    Group group = 6;
+    Backend backend = 7;
+    Dataset dataset = 8;
+  }
+}

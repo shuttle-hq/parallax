@@ -1,0 +1,88 @@
+syntax = "proto3";
+
+package parallax.type.error.v1;
+
+message Error {
+  string reason = 1;
+  reserved 2 to 5;
+
+  oneof details {
+    InternalError internal = 6;
+    TimeoutError timeout = 7;
+    UnavailableError unavailable = 8;
+    ConfigurationError configuration = 9;
+    NotSupportedError notSupported = 10;
+    AccessError access = 11;
+    ScopeError scope = 12;
+    ValidateError validate = 13;
+    BackendError backend = 14;
+  }
+}
+
+message TimeoutError {
+  uint64 timeout_at = 1;
+}
+
+message InternalError {
+  string debug = 1;
+}
+
+message UnavailableError {
+  string resource = 1;
+}
+
+message ConfigurationError {
+  string debug = 1;
+}
+
+message NotSupportedError {
+  string feature = 1;
+}
+
+message AccessError {
+  enum AccessErrorKind {
+    UNKNOWN = 0;
+    FORBIDDEN = 1;
+    BAD_REQUEST = 2;
+    UNAVAILABLE = 3;
+    NOT_FOUND = 4;
+  }
+  AccessErrorKind kind = 1;
+  string culprit = 2;
+  string description = 3;
+  Error cause = 4;
+}
+
+message ScopeError {
+  enum ScopeErrorKind {
+    UNKNOWN = 0;
+    REDIS = 1;
+    NOT_FOUND = 2;
+    ALREADY_EXISTS = 3;
+    INVALID_TYPE = 4;
+    BAD_OBJECT = 5;
+    BAD_SPLAT = 6;
+    MISMATCH = 7;
+    CHANGED = 8;
+  }
+  ScopeErrorKind kind = 1;
+  string source = 2;
+  string description = 3;
+}
+
+message ValidateError {
+  string where = 2;
+  string description = 4;
+}
+
+message BackendError {
+  enum BackendErrorKind {
+    UNKNOWN = 0;
+    IO = 1;
+    UNAVAILABLE = 2;
+    MISSING = 3;
+  }
+  BackendErrorKind kind = 1;
+  string source = 2;
+  string description = 3;
+}

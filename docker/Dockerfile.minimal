@@ -1,0 +1,13 @@
+FROM debian:buster
+
+ARG TARGET=debug
+
+RUN apt-get update && \
+    apt-get install --yes \
+            gnupg2 \
+            openssl \
+            curl
+
+COPY parallax/target/${TARGET}/parallax-worker /usr/bin/parallax-worker
+
+ENTRYPOINT [ "/usr/bin/parallax-worker" ]

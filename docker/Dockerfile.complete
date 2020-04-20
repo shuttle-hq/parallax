@@ -1,0 +1,30 @@
+FROM redis
+
+ARG TARGET=debug
+
+RUN groupadd -r -g 888 parallax && useradd -r -g parallax -u 888 parallax
+
+RUN apt-get update && \
+    apt-get install --yes \
+            gnupg2 \
+            openssl \
+            curl \
+            gettext \
+            python3-pip
+
+COPY parallax/target/${TARGET}/parallax-worker /usr/local/bin/parallax-worker
+COPY parallax/target/${TARGET}/parallax /usr/local/bin/parallax
+
+RUN pip3 install supervisor
+COPY parallax/docker/supervisord.conf /usr/local/etc/supervisord.conf
+
+COPY parallax/docker/entrypoint.sh /usr/local/sbin/entrypoint.sh
+ENTRYPOINT [ "entrypoint.sh" ]
+
+EXPOSE 6548/tcp
+EXPOSE 6599/tcp
+
+RUN mkdir -p /opt/work
+WORKDIR /opt/work
+
+CMD [ "/bin/bash" ]

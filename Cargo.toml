@@ -1,0 +1,10 @@
+[workspace]
+members = [
+  "api",
+  "worker",
+  "cli",
+]
+
+[patch.crates-io]
+http-service = { git = "https://github.com/http-rs/http-service.git" }
+http-service-hyper = { git = "https://github.com/http-rs/http-service.git" }

@@ -1,0 +1,92 @@
+syntax = "proto3";
+
+package parallax.service.resource.v1;
+
+import "google/api/annotations.proto";
+
+import "parallax/config/resource/v1/resource.proto";
+
+service ResourceService {
+  rpc AcquireLock(AcquireLockRequest) returns (AcquireLockResponse) {
+    option (google.api.http) = {
+      post: "/v1/resources/lock"
+    };
+  }
+  rpc ReleaseLock(ReleaseLockRequest) returns (ReleaseLockResponse) {
+    option (google.api.http) = {
+      delete: "/v1/resources/lock/{lockId}"
+    };
+  }
+  rpc ListResources(ListResourcesRequest) returns (ListResourcesResponse) {
+    option (google.api.http) = {
+      get: "/v1/resources/{pattern}"
+    };
+  }
+  rpc CreateResource(CreateResourceRequest) returns (CreateResourceResponse) {
+    option (google.api.http) = {
+      post: "/v1/resources"
+    };
+  }
+  rpc UpdateResource(UpdateResourceRequest) returns (UpdateResourceResponse) {
+    option (google.api.http) = {
+      put: "/v1/resources/{resourceName}"
+    };
+  }
+  rpc DeleteResource(DeleteResourceRequest) returns (DeleteResourceResponse) {
+    option (google.api.http) = {
+      delete: "/v1/resources/{resourceName}"
+    };
+  }
+}
+
+message AcquireLockRequest {
+}
+
+message AcquireLockResponse {
+  // The id of the acquired lock
+  string lockId = 1;
+}
+
+message ReleaseLockRequest {
+  // The id of the lock to release
+  string lockId = 1;
+}
+
+message ReleaseLockResponse {
+}
+
+message ListResourcesRequest {
+  // Splat pattern for the resources to list. Use "*" or "" (empty string)
+  // to list all resources.
+  string pattern = 1;
+}
+
+message ListResourcesResponse {
+  repeated config.resource.v1.Resource resources = 1;
+}
+
+message CreateResourceRequest {
+  config.resource.v1.Resource resource = 1;
+}
+
+message CreateResourceResponse {
+  string resourceName = 1;
+  config.resource.v1.Resource resource = 2;
+}
+
+message UpdateResourceRequest {
+  string resourceName = 1;
+  config.resource.v1.Resource resource = 2;
+}
+
+message UpdateResourceResponse {
+  string resourceName = 1;
+  config.resource.v1.Resource resource = 2;
+}
+
+message DeleteResourceRequest {
+  string resourceName = 1;
+}
+
+message DeleteResourceResponse {
+}

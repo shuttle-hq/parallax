@@ -1,0 +1,27 @@
+FROM rust
+
+ARG PROTOC_VERSION=3.11.4
+ARG ARCH=x86_64
+
+WORKDIR /tmp
+ENV PROTOC_ARCHIVE=protoc-${PROTOC_VERSION}-linux-${ARCH}.zip
+RUN wget https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/${PROTOC_ARCHIVE} &&\
+    unzip ${PROTOC_ARCHIVE} -d /usr/ &&\
+    rm ${PROTOC_ARCHIVE}
+
+ARG RUST_TOOLCHAIN=nightly
+RUN rustup toolchain install ${RUST_TOOLCHAIN} &&\
+    rustup component add rustfmt --toolchain ${RUST_TOOLCHAIN}
+
+ADD ./ /tmp/openquery-core
+
+WORKDIR /tmp/openquery-core/parallax
+RUN cargo +${RUST_TOOLCHAIN} \
+          build \
+          --bin parallax-worker
+
+RUN cargo +${RUST_TOOLCHAIN} \
+          build \
+          --bin parallax
+
+
