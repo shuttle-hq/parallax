@@ -7,13 +7,12 @@ Licensed Work:             Parallax Version 0.1
 
 Additional Use Grant:
 
-You may make use of the Licensed Work, provided that you do not use the
-Licensed Work for a Data Governance or Anonymisation Service.
+You may use the Licensed Work (or features of it) in a production environment
+except in connection with a Data Governance and Anonymisation Service or with
+a service which includes a Data Governance and Anonymisation Service.
 
-A "Data Governance or Anonymisation Service" is a commercial offering that
-allows third parties (other than your employees and contractors) to access the
-functionality of the Licensed Work so that such third parties directly benefit
-from anonymisation or data governance features of the Licensed Work.
+A “Data Governance and Anonymisation Service” is a commercial service or
+application offering that includes anonymisation and data governance features.
 
 Change Date:               2023-03-01
 
