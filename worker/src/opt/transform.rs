@@ -5,6 +5,7 @@ use super::{
     GenericRel, GenericRelTree, Hash, HashAlgorithm, Literal, LiteralValue, Projection, Rel, RelT,
     RelTree, Table, TableMeta, ToContext, TryToContext, ValidateError,
 };
+use crate::opt::ContextError;
 
 #[derive(Debug, Clone)]
 pub struct Policy(pub policy::Policy);
@@ -121,7 +122,8 @@ impl<'a> RelTransformer<'a> {
                 from: Rel::Table(Table(context_key)),
             }) => {
                 debug!("potential rel leaf policy condition met");
-                let table_meta = self.ctx.get(&context_key)?;
+                let table_meta = self.ctx.get_table(&context_key)?;
+
                 let expr_ctx = table_meta.to_context();
 
                 let mut audiences = Vec::new();

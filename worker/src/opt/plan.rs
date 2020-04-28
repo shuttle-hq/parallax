@@ -4,6 +4,7 @@ use super::{
     rel::{GenericRelTree, RelTree},
     Context, ContextKey, Rel, RelT, Table, TableMeta, ValidateError, ValidateResult,
 };
+use crate::opt::ContextError;
 
 fn children_locations(node: &Rel<Step>) -> ValidateResult<HashSet<&BlockType>> {
     let mut locs = HashSet::new();
@@ -67,7 +68,8 @@ impl<'a> PhysicalPlanner<'a> {
         let last_step = self.rel_t.try_fold(&mut |node: Rel<Step>| {
             match node {
                 Rel::Table(Table(key)) => {
-                    let table_meta = ctx.look_up(&key)?;
+                    let table_meta = ctx.get_table(&key)?;
+
                     if table_meta.loc.is_none() {
                         return Err(ValidateError::Insufficient(key.to_string()));
                     }

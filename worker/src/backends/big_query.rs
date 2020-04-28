@@ -346,7 +346,7 @@ impl<'a> BigQueryRelT<'a> {
         self.root.try_fold(&mut |t| {
             match t {
                 Rel::Table(Table(key)) => {
-                    ctx.look_up(&key)
+                    ctx.get(&key)
                         .map(|loc| Rel::Table(Table(loc.to_context_key())))
                         .map(|t| t.to_ansatz().unwrap()) // FIXMEs
                 }

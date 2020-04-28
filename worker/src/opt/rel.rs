@@ -353,12 +353,13 @@ impl RelTryComplete for TableMeta {
                 let ctx: Context<ExprMeta> = left
                     .to_context()
                     .into_iter()
-                    .map(|(k, m)| {
-                        let right_m = right.look_up(&k)?;
-                        if m == *right_m {
-                            Ok((ContextKey::with_name(k.name()), m))
+                    .map(|(key, meta)| {
+                        let right_m = right.get_column(&key)?;
+
+                        if meta == *right_m {
+                            Ok((ContextKey::with_name(key.name()), meta))
                         } else {
-                            Err(ValidateError::SchemaMismatch(k.to_string()))
+                            Err(ValidateError::SchemaMismatch(key.to_string()))
                         }
                     })
                     .collect::<ValidateResult<_>>()?;

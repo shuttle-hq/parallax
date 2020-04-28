@@ -336,6 +336,22 @@ pub enum ContextError {
     Ambiguous(ContextKey),
 }
 
+impl ContextError {
+    fn into_column_error(self) -> ValidateError {
+        match self {
+            ContextError::NotFound(key) => ValidateError::ColumnNotFound(key.to_string()),
+            ContextError::Ambiguous(key) => ValidateError::AmbiguousColumnName(key.to_string()),
+        }
+    }
+
+    fn into_table_error(self) -> ValidateError {
+        match self {
+            ContextError::NotFound(key) => ValidateError::TableNotFound(key),
+            ContextError::Ambiguous(key) => ValidateError::AmbiguousTableName(key),
+        }
+    }
+}
+
 impl std::fmt::Display for ContextError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -347,12 +363,15 @@ impl std::fmt::Display for ContextError {
 
 impl std::error::Error for ContextError {}
 
-impl From<ContextError> for ValidateError {
-    fn from(err: ContextError) -> Self {
-        match err {
-            ContextError::NotFound(k) => ValidateError::TableNotFound(k),
-            ContextError::Ambiguous(k) => ValidateError::AmbiguousTableName(k),
-        }
+impl Context<ExprMeta> {
+    fn get_column(&self, key: &ContextKey) -> Result<&ExprMeta, ValidateError> {
+        self.get(key).map_err(|e| e.into_column_error())
+    }
+}
+
+impl Context<TableMeta> {
+    fn get_table(&self, key: &ContextKey) -> Result<&TableMeta, ValidateError> {
+        self.get(key).map_err(|e| e.into_table_error())
     }
 }
 
@@ -402,11 +421,6 @@ impl<M> Context<M> {
             1 => Ok(&mut matches.pop().unwrap().1),
             _ => Err(ContextError::Ambiguous(key.clone())),
         }
-    }
-
-    #[deprecated(note = "use get instead")]
-    pub fn look_up(&self, key: &ContextKey) -> Result<&M, ContextError> {
-        self.get(key)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &(ContextKey, M)> {

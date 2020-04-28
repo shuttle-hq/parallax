@@ -165,11 +165,7 @@ pub trait Validate: ToContext<M = TableMeta> {
                     let dataset_name = name[0].as_str();
                     let table_name = name[1].as_str();
                     let key = ContextKey::with_name(table_name).and_prefix(dataset_name);
-                    let table_meta = self
-                        .to_context()
-                        .look_up(&key)
-                        .map_err(|e| e.into())
-                        .map(|m| m.clone());
+                    let table_meta = self.to_context().get_table(&key).map(|m| m.clone());
                     let rel_t = RelT {
                         root: Table(key).into(),
                         board: table_meta,
@@ -267,11 +263,7 @@ pub trait ValidateExpr: ToContext<M = ExprMeta> {
         match expr {
             Expr::Identifier(ident) => {
                 let key = ContextKey::with_name(ident.as_str());
-                let expr_meta = self
-                    .to_context()
-                    .look_up(&key)
-                    .map_err(|e| e.into())
-                    .map(|m| m.clone());
+                let expr_meta = self.to_context().get_column(&key).map(|m| m.clone());
                 Ok(ExprT {
                     root: Column(key).into(),
                     board: expr_meta,
@@ -300,11 +292,7 @@ pub trait ValidateExpr: ToContext<M = ExprMeta> {
                     if let Some(rel) = c_ident.get(1) {
                         key = key.and_prefix(rel);
                     }
-                    let expr_meta = self
-                        .to_context()
-                        .look_up(&key)
-                        .map_err(|e| e.into())
-                        .map(|m| m.clone());
+                    let expr_meta = self.to_context().get_column(&key).map(|m| m.clone());
                     Ok(ExprT {
                         root: Column(key).into(),
                         board: expr_meta,
@@ -480,7 +468,7 @@ pub mod tests {
         let rel_t = test_validate_for("SELECT user_id FROM yelp.review");
         let table_meta = rel_t.board.unwrap();
         let expr_ctx = table_meta.to_context();
-        let expr_meta = expr_ctx.look_up(&"f0_".parse().unwrap()).unwrap();
+        let expr_meta = expr_ctx.get(&"f0_".parse().unwrap()).unwrap();
         assert_eq!(expr_meta.ty, DataType::String)
     }
 
@@ -494,7 +482,7 @@ pub mod tests {
         );
         let table_meta = rel_t.board.unwrap();
         let expr_ctx = table_meta.to_context();
-        let expr_meta = expr_ctx.look_up(&"f1_".parse().unwrap()).unwrap();
+        let expr_meta = expr_ctx.get(&"f1_".parse().unwrap()).unwrap();
         assert_eq!(expr_meta.ty, DataType::Float)
     }
 
@@ -502,7 +490,7 @@ pub mod tests {
     fn validate_alias() {
         let rel_t = test_validate_for("SELECT user_id AS username FROM yelp.review");
         let expr_ctx = rel_t.board.unwrap().to_context();
-        expr_ctx.look_up(&"username".parse().unwrap()).unwrap();
+        expr_ctx.get(&"username".parse().unwrap()).unwrap();
     }
 
     #[test]
