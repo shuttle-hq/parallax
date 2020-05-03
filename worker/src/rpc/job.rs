@@ -146,37 +146,26 @@ mod tests {
         }
     }
 
-    type JWT = biscuit::JWT<biscuit::Empty, jws::Header<biscuit::Empty>>;
+    type JWT = biscuit::JWT<biscuit::Empty, biscuit::Empty>;
 
-    fn mk_key_pair() -> (RsaKeyPair, RSAKeyParameters) {
-        let key_pair = node::tests::mk_key_pair();
-        let public = public_key_parameters(&key_pair);
-        (key_pair, public)
-    }
-
-    fn print_public_key() {
-        let encoded = base64::encode(&serde_json::to_string(&mk_key_pair().1).unwrap());
-        println!("{}", encoded)
+    fn mk_secret() -> Secret {
+        Secret::rsa_keypair_from_file("test/private_key.der").unwrap()
     }
 
     fn mk_token() -> Compact {
-        let key_pair = mk_key_pair().0;
-        let secret = Secret::RsaKeyPair(Arc::new(key_pair));
+        let secret = mk_secret();
         let decoded = JWT::new_decoded(
-            Header {
-                registered: RegisteredHeader {
-                    algorithm: SignatureAlgorithm::RS256,
-                    ..Default::default()
-                },
-                private: Default::default(),
-            },
+            Header::from_registered_header(RegisteredHeader {
+                algorithm: SignatureAlgorithm::RS256,
+                ..Default::default()
+            }),
             ClaimsSet {
                 registered: RegisteredClaims {
                     issuer: Some("auth@parallax-demo.openquery.io".parse().unwrap()),
                     subject: Some("unit-tester".parse().unwrap()),
                     ..Default::default()
                 },
-                private: Default::default(),
+                private: biscuit::Empty {},
             },
         );
         decoded.encode(&secret).unwrap().unwrap_encoded()

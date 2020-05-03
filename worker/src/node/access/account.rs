@@ -3,7 +3,7 @@ use biscuit::jwe::RegisteredHeader;
 use biscuit::jwk::RSAKeyParameters;
 use biscuit::jws::{self, Secret};
 use biscuit::{RegisteredClaims, StringOrUri};
-pub type JWT = biscuit::JWT<(), jws::Header<()>>;
+pub type JWT = biscuit::JWT<biscuit::Empty, biscuit::Empty>;
 
 use crate::common::*;
 use crate::Result;
@@ -14,6 +14,17 @@ use crate::job::{Job, Processor};
 use crate::node::{Peer, Shared};
 use crate::opt::PolicyBinding;
 use crate::opt::{Context, TableMeta};
+use regex::Regex;
+
+const PEM_REGEX: &'static str = r"(-----BEGIN .*-----\n)((?:(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)*\n)+)(-----END .*-----)";
+
+/// Converts a pem public key to a biscuit public key secret
+fn pem_to_public_key(pem: &str) -> std::result::Result<Secret, base64::DecodeError> {
+    let re = Regex::new(PEM_REGEX).unwrap();
+    let pem_clean = re.replace(&pem, "$2");
+    let base64_body = pem_clean.replace("\n", "");
+    Ok(Secret::PublicKey(base64::decode(&base64_body)?))
+}
 
 /// An AccessProvider giving access to users after direct
 /// identity validation and only to the appropriate level
@@ -82,7 +93,7 @@ where
             .inner
             .user(&user_id)
             .map_err(|_| access_error!(Unavailable, "could not look for user"))?
-            .ok_or(access_error!(NotFound, "user not found"))?;
+            .ok_or(access_error!(BadRequest, "user not found"))?;
 
         let primary_group = BlockType::parse::<Resource>(&primary_group)
             .map_err(|e| access_error!(Unavailable, "invalid primary group {}", e))?
@@ -92,28 +103,36 @@ where
 
         let jwt = JWT::new_encoded(token);
 
-        let mut keyring = public_keys.into_iter().filter_map(|key_base64| {
-            let key_jwk = base64::decode(&key_base64).ok()?;
-            let key_params: RSAKeyParameters = serde_json::from_slice(&key_jwk).ok()?;
-            Some(Secret::from(key_params))
-        });
+        let mut keyring =
+            public_keys
+                .into_iter()
+                .filter_map(|key_pem| match pem_to_public_key(&key_pem).ok() {
+                    Some(key) => Some(key),
+                    None => {
+                        warn!("invalid key encountered {}", key_pem);
+                        None
+                    }
+                });
 
-        Ok(AccountAccess {
-            user,
-            primary_group,
-            super_user,
-            inner: self.inner.clone(),
-        })
-        /* BROKEN
         for key in keyring {
             match jwt.decode(&key, SignatureAlgorithm::RS256) {
-                Ok(_) => return Ok(Access { user, primary_group, node: node.clone() }),
-                Err(_) => continue
+                Ok(_) => {
+                    return Ok(AccountAccess {
+                        user,
+                        primary_group,
+                        inner: self.inner.clone(),
+                        super_user,
+                    })
+                }
+                Err(_) => continue,
             }
         }
 
-        Err(access_error!(NotFound, "no valid key for user_id `{}`", user_id))
-         */
+        Err(access_error!(
+            BadRequest,
+            "no valid key for user_id `{}`",
+            user_id
+        ))
     }
 }
 

@@ -160,13 +160,6 @@ pub(crate) mod tests {
 
     use tokio::runtime::Runtime;
 
-    const SAMPLE_SECRET: &'static str = "MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQD+xoWJzXNAYEvXipD5xxQDx8pb6vDDX1afgcF86gTYkjclQqTXjfkUTPyESWdCyPYI1joQfCFq06nGZlUOZjIEpDVkYvE+KOOI/ojh2GwLXZlspQ54/qi6AU3YlcT1tYF6jrL/TOvsZOo0cCP5TZHrOHknfpnZD2vYIs64AuJ+mzkt0UPTz7P3Z0E8GmuUVvJQ7k0ZzjslZMdw6aBpSrQcTg480azwzwkFRdq6tWcZhn1wK4SagkU/h0L4vYkNwsLcZsEmcLnKdHSsN7mtN4xKpC8vcZk6Th8DN1g+YkV9yQKcuLr6xhCWahw7RFk/2gQHvlLyPPFziC9FnTaK6zIhAgMBAAECggEBAIQg6LhiuFa2mh6aWj1vpU2gm6231k08cGwgmvvxUboPelH0khDILFj+5Cam+sqD9jT3BP3volUImI+wGoRxM5d8ocQCHCKkifxOJScbWk06qYrSvwK470An1PtyEMds7k1lHCeS+PeMDnpLfhyYwgg/LXXyDk+n08Ivqw17UYNebA+/2xNs2WTMnjTPZsCgBCrsYIJcjf3xAnG9I6sC8nMI9KtTcwa6JlneAvEazk0XlDL6iu5fOWIB9fazw3W/c9eCGou1yL/eeDtXd5a/iOBQok1OxPNBWgIE1SB12y4xJ9WS3H2pi37qEhCn0b4kAQ69/p2AWHrNZc1Yzl9E9BECgYEA/2o4e8D+Hvjt9LeNC44SC97gkNQCRUR6M6brKkuIu4/usmAauHVIipfQiINvmcCKHfPwPyzQemmxnILB1LbLqcYiBGuscLLYXWBrJ1/q7VXAz3MONYPVP2qYodfnTNUnx42myZq9RNSmzdvsAmsaIruUe6UKzW3+OR3lhxDeM78CgYEA/1vtDybLVttrYxptpz9fGxZt8HbeIAoUPecZ3hZ6IlJCcBszJ/xI503SI+pXjVscXAgJRiUJ+spM5e+oiLuSXf+JgS6yqDHbeuqq9NW6DLcNtvFQyIlxc81K/hDVVChucwRDjHEC6YUpw9op9CVrfy3cjUAB66h1YR64OtmAkh8CgYEAkuNJnJI/Exzh7IzrBqwr4LvKtj/XFnLtPGtQb0CFYCjEg70VYOPCVkI84WWFdwzt4Y/6qLpjIyNJy9K/GlAODJMv2Q77Wszf9cOPnFNjTh61BhkLIOeyaggpw1nhYaRsfi0OsH7XPpB1ZYqGzlU98J+kIv+lmMMbI0n4SJcA0w0CgYEAg4f5Im3MHTAmL0TkqFonBc/Wzx6bKYung38vPsr7HASc/hu0jOsRLjtSe3dwo3oDsI/fHwdjDY/4bhO1DsD3En3WePjxw1ry/2wypKwWCgicAthn0POiwZBECXvoNlIhGhNfK87mPhx+N8h/Bafkp/yadxM6KgV6eI0XPhDcfecCgYAVTIPMemxfjv/gDgZINhjbnrXHctIuysZqU7emnikxHkHFcqfDlbI2C3QtXKkXw3X+Ba+YxaEoHm+JSIVEWR30Km/5AQr+KIAdfMCk9ErxkhsuFb8duZ7jPIJ93ChC3gj+Ve3xWGe1eCI4mELoHXYFvRGTMl0+OUzxBiQfHcc5EA==";
-
-    pub fn mk_key_pair() -> RsaKeyPair {
-        let secret_dat = base64::decode(SAMPLE_SECRET).unwrap();
-        RsaKeyPair::from_pkcs8(&secret_dat).unwrap()
-    }
-
     pub fn mk_random_node() -> Node {
         let random = uuid::Uuid::new_v4().to_simple().to_string();
         mk_node(&random)
