@@ -187,6 +187,7 @@ impl Client {
             get_job: GetJobRequest, GetJobResponse,
             insert_job: InsertJobRequest, InsertJobResponse,
             cancel_job: CancelJobRequest, CancelJobResponse,
+            list_jobs: ListJobsRequest, ListJobsResponse,
             get_job_output_schema: GetJobOutputSchemaRequest, GetJobOutputSchemaResponse,
             get_job_output_rows: GetJobOutputRowsRequest, Streaming<GetJobOutputRowsResponse>,
         }

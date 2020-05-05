@@ -36,6 +36,20 @@ service JobService {
       post: "/v1/jobs/{jobId}/cancel"
     };
   }
+
+  rpc ListJobs(ListJobsRequest) returns (ListJobsResponse) {
+    option (google.api.http) = {
+      get: "/v1/jobs"
+    };
+  }
+}
+
+message ListJobsRequest {
+
+}
+
+message ListJobsResponse {
+  repeated Job jobs = 1;
 }
 
 message GetJobOutputSchemaRequest {

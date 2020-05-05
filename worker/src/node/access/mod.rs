@@ -88,6 +88,7 @@ pub trait Access: Sized + Send + Sync + 'static {
     fn resources(&self, pat: &BlockType) -> Result<Vec<Resource>>;
     fn acquire_lock(&self) -> Result<String>;
     fn release_lock(&self, lock_id: &str) -> Result<()>;
+    fn list_jobs(&self) -> Result<Vec<Job>>;
 
     fn job(&self, job_id: &str) -> Result<Option<Job>> {
         self.shared_job(job_id).and_then(|job| {

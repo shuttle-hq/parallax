@@ -3,9 +3,8 @@
 use anyhow::{Error, Result};
 use structopt::StructOpt;
 
-use std::collections::HashMap;
 use std::fs::File;
-use std::io::{Cursor, Read, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use csv as csv_crate;
@@ -14,24 +13,22 @@ use tonic::transport::Uri;
 
 #[macro_use]
 extern crate prettytable;
+
 use prettytable::{Cell, Row, Table};
 
 use dialoguer::Confirmation;
 
-use futures::prelude::Stream;
-use futures::stream::StreamExt;
-
 mod config;
+
 use config::{Config, Identities, Identity, Keyring};
 
 mod init;
+
 use init::init;
 
 mod gov;
 
 mod job;
-
-use parallax_api::JobState;
 
 fn with_expand_home(p: &str) -> Result<PathBuf> {
     let expanded = shellexpand::tilde(p).into_owned();
@@ -42,11 +39,11 @@ fn with_expand_home(p: &str) -> Result<PathBuf> {
 #[structopt(name = "parallax", about = "Manage Parallax resources and workflows")]
 pub struct Opt {
     #[structopt(
-        long,
-        help = "the location of parallax home",
-        env = "PARALLAX_HOME",
-        default_value = "~/.config/parallax",
-        parse(try_from_str = with_expand_home)
+    long,
+    help = "the location of parallax home",
+    env = "PARALLAX_HOME",
+    default_value = "~/.config/parallax",
+    parse(try_from_str = with_expand_home)
     )]
     home: PathBuf,
     #[structopt(long, help = "disable tls (NOT RECOMMENDED)")]
@@ -172,7 +169,10 @@ enum GovSubCommand {
 
 #[derive(Debug, Clone, StructOpt)]
 enum JobSubCommand {
-    #[structopt(about = "Lists jobs that have been submitted previously")]
+    #[structopt(
+        about = "Lists jobs that have been submitted previously",
+        visible_alias = "ls"
+    )]
     List,
     #[structopt(about = "Inserts a new query job")]
     Insert {
@@ -392,37 +392,9 @@ async fn main() -> Result<()> {
         },
         Command::Jobs { subcmd } => match subcmd {
             JobSubCommand::List => {
-                let mut jobs = config.get_jobs()?;
-
                 let mut client = config.new_client(opt.disable_tls).await?;
-                jobs.refresh(&mut client).await?;
-
-                let mut table = Table::new();
-                table.add_row(row!["ID", "TIMESTAMP", "STATE"]);
-
-                for job in jobs.clone().into_iter() {
-                    let id = job.id;
-                    let timestamp = job.timestamp;
-                    let state = if let Some(status) = job.status {
-                        match status.state() {
-                            JobState::Done => {
-                                if status.final_error.is_some() {
-                                    "Failed".to_string()
-                                } else {
-                                    "Done".to_string()
-                                }
-                            }
-                            other => format!("{:?}", other),
-                        }
-                    } else {
-                        "Unknown".to_string()
-                    };
-                    table.add_row(row![id, timestamp, state]);
-                }
-
-                table.printstd();
-
-                config.set_jobs(jobs)?;
+                let jobs = job::list_jobs(&mut client).await?;
+                job::print_jobs(jobs);
             }
             JobSubCommand::Insert { query } => {
                 let query = if let Some(query) = query {
@@ -433,22 +405,13 @@ async fn main() -> Result<()> {
                     buf
                 };
                 let mut client = config.new_client(opt.disable_tls).await?;
-                let mut jobs = config.get_jobs()?;
-                let job = jobs.insert(&mut client, &query).await?;
+                let job = job::insert_job(&mut client, &query).await?;
                 println!("{}", job.id);
-                config.set_jobs(jobs)?;
             }
             JobSubCommand::Get { job_id } => {
-                let mut jobs = config.get_jobs()?;
-                let job = jobs.find(&job_id)?;
-
                 let mut client = config.new_client(opt.disable_tls).await?;
-                if !job::is_done(job) {
-                    *job = job::get_job(&mut client, &job_id).await?;
-                }
+                let job = job::find_job(&mut client, &job_id).await?;
                 println!("{:#?}", job);
-
-                config.set_jobs(jobs)?;
             }
             JobSubCommand::Fetch {
                 job_id,
@@ -456,19 +419,14 @@ async fn main() -> Result<()> {
                 format,
                 truncate,
             } => {
-                let mut jobs = config.get_jobs()?;
-                let job = jobs.find(&job_id)?;
-
                 let mut client = config.new_client(opt.disable_tls).await?;
-                if !job::is_done(job) {
-                    *job = job::get_job(&mut client, &job_id).await?;
-                }
+                let job = job::find_job(&mut client, &job_id).await?;
 
-                if !job::is_done(job) {
+                if !job::is_done(&job) {
                     return Err(Error::msg("job has not finished yet"));
                 }
 
-                let mut fetch = job::Fetch::new(&mut client, &job);
+                let fetch = job::Fetch::new(&mut client, &job);
 
                 match format {
                     OutputFormat::Csv => {

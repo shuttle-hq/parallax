@@ -14,12 +14,6 @@ use anyhow::{Context, Error, Result};
 
 use parallax_api::client::{rsa_key_pem_to_der, Authenticator, Client, ClientTlsConfig};
 
-use crate::Opt;
-
-use crate::job::Jobs;
-
-static DEFAULT_HOME: &'static str = "~/.config/parallax/";
-
 #[derive(Serialize, Deserialize)]
 pub struct Keyring {
     pub secrets: HashMap<String, String>,
@@ -121,30 +115,6 @@ impl Config {
                 })
             }
         }
-    }
-
-    pub fn get_jobs(&self) -> Result<Jobs> {
-        let jobs_path = self.get_path("jobs.yaml");
-        match File::open(jobs_path.as_path()) {
-            Ok(mut file) => {
-                let mut buf = String::new();
-                file.read_to_string(&mut buf)?;
-                let jobs = serde_yaml::from_str(&buf)?;
-                Ok(jobs)
-            }
-            Err(_) => {
-                let jobs = Jobs::default();
-                self.set_jobs(jobs.clone())?;
-                Ok(jobs)
-            }
-        }
-    }
-
-    pub fn set_jobs(&self, jobs: Jobs) -> Result<()> {
-        let jobs_path = self.get_path("jobs.yaml");
-        let as_str = serde_yaml::to_string(&jobs)?;
-        File::create(jobs_path.as_path())?.write(as_str.as_bytes())?;
-        Ok(())
     }
 
     pub fn set_default_identity(

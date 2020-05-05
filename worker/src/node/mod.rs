@@ -20,23 +20,28 @@ use crate::opt::{Context, ContextKey, DataType, ExprMeta, PolicyBinding, TableMe
 use crate::Opt;
 
 pub mod access;
+
 pub use access::{Access, AccessProvider, AccessResult};
 
 #[cfg(not(test))]
 mod state;
 #[cfg(test)]
 pub mod state;
+
 pub use state::{Scope, SharedState};
 
 mod backends;
+
 pub use backends::Backends;
 
 mod resource;
+
 pub use resource::{
     BlockStore, BlockStoreExt, RedisBlockStore, Shared, SharedBlockStore, SharedScope,
 };
 
 mod cluster;
+
 pub use cluster::{Cluster, Peer};
 
 pub(self) mod ops;
@@ -92,7 +97,7 @@ impl Node {
 
         let cluster = Cluster::join_as(store.clone(), advertised)?;
 
-        let state = SharedState::new(store.clone(), "gobal");
+        let state = SharedState::new(store.clone(), "global");
 
         let backends = Backends::new(state.clone());
 
@@ -108,9 +113,20 @@ impl Node {
 impl Access for Arc<Node> {
     fn who_am_i(&self) -> &str {
         "root"
-    } // FIXME
+    }
+    // FIXME
     fn default_group(&self) -> &str {
         "root"
+    }
+
+    fn list_jobs(&self) -> Result<Vec<Job>> {
+        // This is in the root context so it should list all jobs
+        let jobs = self
+            .cluster
+            .jobs
+            .read_all(&block_type!("job"."*"), |block| block.clone())?
+            .collect();
+        Ok(jobs)
     }
 
     fn shared_job(&self, job_id: &str) -> Result<Shared<Job>> {

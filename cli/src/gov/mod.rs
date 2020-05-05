@@ -1,10 +1,9 @@
 use colored::Colorize;
 
 use anyhow::{Error, Result};
-use structopt::StructOpt;
 
 use std::collections::HashMap;
-use std::fs::{read, read_dir, File};
+use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -82,7 +81,7 @@ impl std::fmt::Display for Plan {
                 f,
                 "{}",
                 "\n  No changes. State up to date.\n".bright_green().bold()
-            );
+            )?;
             return Ok(());
         }
 
@@ -91,9 +90,9 @@ impl std::fmt::Display for Plan {
             f,
             "State mutation operations are indicated by the following symbols:\n"
         )?;
-        write!(f, "  {} create\n", "+".green().bold());
-        write!(f, "  {} update\n", "~".yellow().bold());
-        write!(f, "  {} delete\n", "-".red().bold());
+        write!(f, "  {} create\n", "+".green().bold())?;
+        write!(f, "  {} update\n", "~".yellow().bold())?;
+        write!(f, "  {} delete\n", "-".red().bold())?;
 
         for resource in &self.create {
             let resource_str = format_resource(resource, Operation::Create)?;

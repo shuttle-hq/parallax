@@ -202,6 +202,16 @@ where
         self.ensure_super()?;
         self.inner.release_lock(lock_id)
     }
+
+    fn list_jobs(&self) -> Result<Vec<Job>> {
+        let jobs = self
+            .inner
+            .list_jobs()?
+            .into_iter()
+            .filter(|job| job.user() == self.who_am_i())
+            .collect();
+        Ok(jobs)
+    }
 }
 
 #[cfg(test)]

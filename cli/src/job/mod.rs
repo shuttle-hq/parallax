@@ -1,25 +1,21 @@
 use anyhow::{Error, Result};
 
-use serde::{Deserialize, Serialize};
+use std::io::{Cursor, Write};
 
-use std::io::{Cursor, Read, Write};
-use std::sync::Arc;
+use prettytable::Table;
 
 use tonic::Request;
 
-use futures::prelude::{Stream, TryStream};
+use futures::prelude::TryStream;
 use futures::stream::{StreamExt, TryStreamExt};
 
 use arrow::csv::writer::Writer as CsvWriter;
 use arrow::ipc::reader::StreamReader;
-use arrow::record_batch::RecordBatch;
-
-use csv as csv_crate;
 
 use parallax_api::{
     client::Client, ArrowRecordBatch, ArrowSchema, GetJobOutputRowsRequest,
-    GetJobOutputRowsResponse, GetJobOutputSchemaRequest, GetJobOutputSchemaResponse, GetJobRequest,
-    GetJobResponse, InsertJobRequest, InsertJobResponse, Job, JobState, JobStatus,
+    GetJobOutputRowsResponse, GetJobOutputSchemaRequest, GetJobOutputSchemaResponse,
+    InsertJobRequest, InsertJobResponse, Job, JobState, ListJobsRequest,
 };
 
 pub fn is_done(job: &Job) -> bool {
@@ -30,13 +26,67 @@ pub fn is_done(job: &Job) -> bool {
     }
 }
 
-pub async fn get_job(client: &mut Client, job_id: &str) -> Result<Job> {
-    let req = GetJobRequest {
-        job_id: job_id.to_string(),
+pub async fn find_job(client: &mut Client, pattern: &str) -> Result<Job> {
+    let jobs = list_jobs(client).await?;
+    let matches: Vec<Job> = jobs
+        .into_iter()
+        .filter(|job| job.id.starts_with(pattern))
+        .collect();
+    match matches.len() {
+        0 => Err(Error::msg(format!("job {} not found", pattern))),
+        1 => Ok(matches.get(0).unwrap().to_owned()),
+        _ => {
+            let match_ids: Vec<String> = matches.into_iter().map(|job| job.id).collect();
+            Err(Error::msg(format!(
+                "more than one job with same id found {:?}",
+                match_ids
+            )))
+        }
+    }
+}
+
+pub async fn insert_job(client: &mut Client, query: &str) -> Result<Job> {
+    let job = Job {
+        query: query.to_string(),
+        ..Default::default()
     };
-    let GetJobResponse { job: new_job } = client.get_job(req).await?.into_inner();
-    let new_job = new_job.ok_or(Error::msg("no job was returned"))?;
-    Ok(new_job)
+    let req = Request::new(InsertJobRequest { job: Some(job) });
+    let InsertJobResponse { job } = client.insert_job(req).await?.into_inner();
+    let job = job.ok_or(Error::msg("no job was returned"))?;
+    Ok(job)
+}
+
+pub async fn list_jobs(client: &mut Client) -> Result<Vec<Job>> {
+    let req = Request::new(ListJobsRequest {});
+    let jobs = client.list_jobs(req).await?.into_inner().jobs;
+    Ok(jobs)
+}
+
+pub(crate) fn print_jobs(jobs: Vec<Job>) {
+    let mut table = Table::new();
+    table.add_row(row!["ID", "TIMESTAMP", "STATE"]);
+
+    for job in jobs.into_iter() {
+        let id = job.id;
+        let timestamp = job.timestamp;
+        let state = if let Some(status) = job.status {
+            match status.state() {
+                JobState::Done => {
+                    if status.final_error.is_some() {
+                        "Failed".to_string()
+                    } else {
+                        "Done".to_string()
+                    }
+                }
+                other => format!("{:?}", other),
+            }
+        } else {
+            "Unknown".to_string()
+        };
+        table.add_row(row![id, timestamp, state]);
+    }
+
+    table.printstd();
 }
 
 pub fn strip_continuation_bytes(msg: &[u8]) -> Result<&[u8]> {
@@ -147,58 +197,6 @@ impl<'a> Fetch<'a> {
             }
         }
 
-        Ok(())
-    }
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct Jobs(Vec<Job>);
-
-impl std::iter::FromIterator<Job> for Jobs {
-    fn from_iter<T: IntoIterator<Item = Job>>(iter: T) -> Self {
-        Self(Vec::from_iter(iter))
-    }
-}
-
-impl std::iter::IntoIterator for Jobs {
-    type Item = Job;
-    type IntoIter = std::vec::IntoIter<Job>;
-    fn into_iter(self) -> Self::IntoIter {
-        self.0.into_iter()
-    }
-}
-
-impl Jobs {
-    pub async fn insert(&mut self, client: &mut Client, query: &str) -> Result<Job> {
-        let job = Job {
-            query: query.to_string(),
-            ..Default::default()
-        };
-        let req = Request::new(InsertJobRequest { job: Some(job) });
-        let InsertJobResponse { job } = client.insert_job(req).await?.into_inner();
-        let job = job.ok_or(Error::msg("no job was returned"))?;
-        self.0.push(job.clone());
-        Ok(job)
-    }
-    pub fn find(&mut self, job_id: &str) -> Result<&mut Job> {
-        let mut matches: Vec<_> = self
-            .0
-            .iter_mut()
-            .filter(|job| job.id.contains(job_id))
-            .collect();
-        match matches.len() {
-            0 => Err(Error::msg(format!("job {} not found", job_id))),
-            1 => Ok(matches.pop().unwrap()),
-            _ => Err(Error::msg(format!("more than one job with same id found"))), // FIXME
-        }
-    }
-    pub async fn refresh(&mut self, client: &mut Client) -> Result<()> {
-        for job in self.0.iter_mut() {
-            if is_done(job) {
-                continue;
-            }
-            *job = get_job(client, &job.id).await?;
-        }
         Ok(())
     }
 }

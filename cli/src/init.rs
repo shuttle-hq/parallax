@@ -1,14 +1,11 @@
 use colored::Colorize;
 
-use std::sync::Arc;
-
 use anyhow::{Error, Result};
 
-use tokio_rustls::rustls::{Certificate, ClientConfig};
 use tonic::transport::Uri;
 
 use parallax_api::{
-    client::{extract_public_key_pem, generate_rsa_key_pair_pem, Client, ClientTlsConfig},
+    client::{extract_public_key_pem, generate_rsa_key_pair_pem, Client},
     Block, CreateResourceRequest, Group, ListResourcesRequest, Resource, User,
 };
 

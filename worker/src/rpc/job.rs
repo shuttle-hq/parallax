@@ -101,6 +101,22 @@ where
 
         Ok(Response::new(CancelJobResponse { job: Some(job) }))
     }
+
+    /// List all jobs
+    async fn list_jobs(
+        &self,
+        req: Request<ListJobsRequest>,
+    ) -> Result<Response<ListJobsResponse>, Status> {
+        let access = self.access.elevate(&req)?;
+
+        let jobs = access
+            .list_jobs()?
+            .into_iter()
+            .map(|job| job.to_proto())
+            .collect();
+
+        Ok(Response::new(ListJobsResponse { jobs }))
+    }
 }
 
 #[cfg(test)]
@@ -256,6 +272,37 @@ mod tests {
             let status = job.status.unwrap();
             assert_eq!(status.state, JobState::Done as i32);
             assert!(status.final_error.is_some());
+        })
+    }
+
+    #[test]
+    fn query_rpc_insert_job_and_list() {
+        test_query_rpc(async move |mut client| {
+            let job = Job {
+                query: "SELECT business_id FROM yelp.business".to_string(),
+                ..Default::default()
+            };
+            let req = mk_req(InsertJobRequest {
+                job: Some(job.clone()),
+            });
+            let job1 = client
+                .insert_job(req)
+                .await
+                .unwrap()
+                .into_inner()
+                .job
+                .unwrap();
+            let req = mk_req(InsertJobRequest { job: Some(job) });
+            let job2 = client
+                .insert_job(req)
+                .await
+                .unwrap()
+                .into_inner()
+                .job
+                .unwrap();
+            let list_req = mk_req(ListJobsRequest {});
+            let jobs = client.list_jobs(list_req).await.unwrap().into_inner().jobs;
+            assert!(jobs.len() > 1);
         })
     }
 
