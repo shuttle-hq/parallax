@@ -7,6 +7,12 @@ import "google/api/annotations.proto";
 import "parallax/type/error/v1/error.proto";
 
 service JobService {
+  rpc QueryJob(QueryJobRequest) returns (QueryJobResponse) {
+    option (google.api.http) = {
+      post: "/v1/queries"
+    };
+  }
+
   rpc GetJobOutputSchema(GetJobOutputSchemaRequest) returns (GetJobOutputSchemaResponse) {
     option (google.api.http) = {
       get: "/v1/jobs/{jobId}/output/schema"
@@ -50,6 +56,18 @@ message ListJobsRequest {
 
 message ListJobsResponse {
   repeated Job jobs = 1;
+}
+
+message QueryJobRequest {
+  // The initialised state of the job
+  Job job = 1;
+  // Timeout for the query job in seconds
+  uint64 timeout = 2;
+}
+
+message QueryJobResponse {
+  ArrowSchema arrow_schema = 1;
+  repeated ArrowRecordBatch arrow_record_batches = 2;
 }
 
 message GetJobOutputSchemaRequest {

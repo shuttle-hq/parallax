@@ -3,6 +3,8 @@ use crate::common::*;
 const MAX_TIMEOUT_MS: u64 = 3600; // FIXME: expose as a state setting
 
 use crate::node::{Access, AccessProvider};
+use std::time::{Duration, Instant};
+use tonic::metadata::KeyAndValueRef;
 
 pub struct JobServiceImpl<A> {
     access: A,
@@ -12,6 +14,22 @@ impl<A> JobServiceImpl<A> {
     pub fn new(access: A) -> Self {
         Self { access }
     }
+}
+
+/// Creates a request with metadata from an old request
+fn map_meta<F, T>(from: &Request<F>, inner: T) -> Request<T> {
+    let mut to = Request::new(inner);
+    for kv in from.metadata().iter() {
+        match kv {
+            KeyAndValueRef::Ascii(key, value) => {
+                to.metadata_mut().insert(key, value.clone());
+            }
+            KeyAndValueRef::Binary(key, value) => {
+                to.metadata_mut().insert_bin(key, value.clone());
+            }
+        }
+    }
+    to
 }
 
 #[tonic::async_trait]
@@ -102,6 +120,118 @@ where
         Ok(Response::new(CancelJobResponse { job: Some(job) }))
     }
 
+    async fn query_job(
+        &self,
+        req: Request<QueryJobRequest>,
+    ) -> Result<Response<QueryJobResponse>, Status> {
+        let job = req.get_ref().job.clone();
+        let timeout = req.get_ref().timeout;
+
+        if timeout > 60 * 30 {
+            return Err(Status::invalid_argument(
+                "The maximum timeout is 30 minutes. (1800 seconds)",
+            ));
+        }
+
+        let insert_job_req = map_meta(&req, InsertJobRequest { job });
+        let job_id = self
+            .insert_job(insert_job_req)
+            .await?
+            .into_inner()
+            .job
+            .ok_or(Status::internal("Job insertion did not return job_id"))?
+            .id;
+
+        let mut job_done = false;
+        let mut delay_millis = 500;
+        let start_time = Instant::now();
+
+        while !job_done {
+            if start_time.elapsed() > Duration::from_secs(timeout) {
+                let cancel_job_request = map_meta(
+                    &req,
+                    CancelJobRequest {
+                        job_id: job_id.clone(),
+                    },
+                );
+                self.cancel_job(cancel_job_request).await?;
+                return Err(Status::deadline_exceeded(format!(
+                    "Timeout occurred... Job {} cancelled.",
+                    job_id
+                )));
+            }
+
+            let get_job_req = map_meta(
+                &req,
+                GetJobRequest {
+                    job_id: job_id.clone(),
+                },
+            );
+
+            let job = self
+                .get_job(get_job_req)
+                .await?
+                .into_inner()
+                .job
+                .ok_or(Status::internal(format!(
+                    "Could not get job for id {}",
+                    job_id
+                )))?;
+
+            let state = job
+                .status
+                .ok_or(Status::internal(format!(
+                    "Job {} does not have an associated state",
+                    job_id
+                )))?
+                .state;
+
+            match state {
+                3 => {
+                    job_done = true;
+                }
+                _ => {
+                    // exponential backoff
+                    tokio::time::delay_for(Duration::from_millis(delay_millis)).await;
+                    delay_millis = (delay_millis as f64 * 1.5) as u64;
+                }
+            }
+        }
+
+        let schema_req = map_meta(
+            &req,
+            GetJobOutputSchemaRequest {
+                job_id: job_id.clone(),
+            },
+        );
+        let arrow_schema = self
+            .get_job_output_schema(schema_req)
+            .await?
+            .into_inner()
+            .arrow_schema
+            .unwrap();
+
+        let row_req = map_meta(
+            &req,
+            GetJobOutputRowsRequest {
+                job_id: job_id.clone(),
+            },
+        );
+        let arrow_record_batches: Vec<parallax_api::ArrowRecordBatch> = self
+            .get_job_output_rows(row_req)
+            .await?
+            .into_inner()
+            .try_collect::<Vec<parallax_api::GetJobOutputRowsResponse>>()
+            .await?
+            .into_iter()
+            .map(|resp| resp.arrow_record_batch.unwrap())
+            .collect();
+
+        Ok(Response::new(QueryJobResponse {
+            arrow_schema: Some(arrow_schema),
+            arrow_record_batches,
+        }))
+    }
     /// List all jobs
     async fn list_jobs(
         &self,
@@ -244,6 +374,51 @@ mod tests {
                 Err(status) => assert_eq!(status.code(), tonic::Code::NotFound),
                 Ok(_) => (),
             };
+        })
+    }
+
+    #[test]
+    fn query_rpc_query_job() {
+        test_query_rpc(async move |mut client| {
+            let job = Job {
+                query: "SELECT business_id FROM yelp.business".to_string(),
+                ..Default::default()
+            };
+            let req = mk_req(QueryJobRequest {
+                job: Some(job),
+                timeout: 600,
+            });
+            let query_job_resp = client.query_job(req).await.unwrap().into_inner();
+
+            assert!(query_job_resp.arrow_schema.unwrap().serialized_schema.len() > 0);
+            assert!(
+                query_job_resp
+                    .arrow_record_batches
+                    .get(0)
+                    .unwrap()
+                    .serialized_record_batch
+                    .len()
+                    > 0
+            );
+        })
+    }
+
+    #[test]
+    fn query_rpc_query_job_timeout_exceeded() {
+        test_query_rpc(async move |mut client| {
+            let job = Job {
+                query: "SELECT business_id FROM yelp.business".to_string(),
+                ..Default::default()
+            };
+            let req = mk_req(QueryJobRequest {
+                job: Some(job),
+                timeout: 3601,
+            });
+
+            match client.query_job(req).await {
+                Ok(_) => panic!("Timeout should be exceeded"),
+                Err(status) => assert_eq!(status.code(), tonic::Code::InvalidArgument),
+            }
         })
     }
 

@@ -6,17 +6,20 @@ use prettytable::Table;
 
 use tonic::Request;
 
-use futures::prelude::TryStream;
-use futures::stream::{StreamExt, TryStreamExt};
+use futures::prelude::{Stream, TryStream};
+use futures::stream::{self, StreamExt, TryStreamExt};
 
 use arrow::csv::writer::Writer as CsvWriter;
 use arrow::ipc::reader::StreamReader;
 
 use parallax_api::{
     client::Client, ArrowRecordBatch, ArrowSchema, GetJobOutputRowsRequest,
-    GetJobOutputRowsResponse, GetJobOutputSchemaRequest, GetJobOutputSchemaResponse,
-    InsertJobRequest, InsertJobResponse, Job, JobState, ListJobsRequest,
+    GetJobOutputRowsResponse, GetJobOutputSchemaRequest, GetJobOutputSchemaResponse, GetJobRequest,
+    GetJobResponse, InsertJobRequest, InsertJobResponse, Job, JobState, JobStatus, ListJobsRequest,
+    QueryJobRequest, QueryJobResponse,
 };
+use std::pin::Pin;
+use tonic::codegen::BoxStream;
 
 pub fn is_done(job: &Job) -> bool {
     if let Some(status) = job.status.as_ref() {
@@ -62,9 +65,12 @@ pub async fn list_jobs(client: &mut Client) -> Result<Vec<Job>> {
     Ok(jobs)
 }
 
-pub(crate) fn print_jobs(jobs: Vec<Job>) {
+pub(crate) fn print_jobs(mut jobs: Vec<Job>) {
     let mut table = Table::new();
     table.add_row(row!["ID", "TIMESTAMP", "STATE"]);
+
+    // Alphanumeric sorting should be ok here.
+    jobs.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
     for job in jobs.into_iter() {
         let id = job.id;
@@ -144,30 +150,75 @@ pub async fn fetch_serialized_rows(
         })
 }
 
+pub enum FetchOp {
+    Fetch,
+    Query { timeout: u64 },
+}
+
 pub struct Fetch<'a> {
     client: &'a mut Client,
     job: &'a Job,
     truncate: Option<usize>,
+    op: FetchOp,
 }
 
 impl<'a> Fetch<'a> {
-    pub fn new(client: &'a mut Client, job: &'a Job) -> Self {
+    pub fn new(client: &'a mut Client, job: &'a Job, op: FetchOp) -> Self {
         Self {
             client,
             job,
             truncate: None,
+            op,
         }
     }
+
+    pub fn fetch(client: &'a mut Client, job: &'a Job) -> Self {
+        Fetch::new(client, job, FetchOp::Fetch)
+    }
+
+    pub fn query(client: &'a mut Client, job: &'a Job, timeout: u64) -> Self {
+        Fetch::new(client, job, FetchOp::Query { timeout })
+    }
+
     pub fn truncate(mut self, to: usize) -> Self {
         self.truncate = Some(to);
         self
     }
+
     pub async fn write_csv<W: Write>(self, write: W) -> Result<()> {
-        let serialized_schema = fetch_serialized_schema(self.client, &self.job).await?;
+        let (serialized_schema, mut serialized_rows) = match self.op {
+            FetchOp::Fetch => {
+                let serialized_schema = fetch_serialized_schema(self.client, &self.job).await?;
+                let serialized_rows: Pin<Box<dyn Stream<Item = Result<Vec<u8>>>>> =
+                    fetch_serialized_rows(self.client, &self.job).await?.boxed();
+                (serialized_schema, serialized_rows)
+            }
+            FetchOp::Query { timeout } => {
+                let query_job_response = self
+                    .client
+                    .query_job(QueryJobRequest {
+                        job: Some(self.job.clone()),
+                        timeout,
+                    })
+                    .await?
+                    .into_inner();
+                let serialized_schema: Vec<u8> = query_job_response
+                    .arrow_schema
+                    .ok_or(Error::msg("unexpected: did not receive output schema"))?
+                    .serialized_schema
+                    .to_owned();
+                let serialized_rows: Vec<Result<Vec<u8>>> = query_job_response
+                    .arrow_record_batches
+                    .into_iter()
+                    .map(|arb| Ok(arb.serialized_record_batch))
+                    .collect();
+                let row_stream_iter = Box::new(stream::iter(serialized_rows));
+                let stream = row_stream_iter as Box<dyn Stream<Item = Result<Vec<u8>>>>;
+                (serialized_schema, Pin::from(stream))
+            }
+        };
 
         let serialized_schema = strip_continuation_bytes(&serialized_schema)?;
-
-        let mut serialized_rows = fetch_serialized_rows(self.client, &self.job).await?.boxed();
 
         let mut writer = CsvWriter::new(write);
 

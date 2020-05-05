@@ -190,6 +190,7 @@ impl Client {
             list_jobs: ListJobsRequest, ListJobsResponse,
             get_job_output_schema: GetJobOutputSchemaRequest, GetJobOutputSchemaResponse,
             get_job_output_rows: GetJobOutputRowsRequest, Streaming<GetJobOutputRowsResponse>,
+            query_job: QueryJobRequest, QueryJobResponse,
         }
     }
 

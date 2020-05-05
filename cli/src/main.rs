@@ -30,6 +30,11 @@ mod gov;
 
 mod job;
 
+use crate::job::Fetch;
+use parallax_api::Job;
+use parallax_api::JobState;
+use std::sync::Arc;
+
 fn with_expand_home(p: &str) -> Result<PathBuf> {
     let expanded = shellexpand::tilde(p).into_owned();
     Ok(Path::new(&expanded).to_owned())
@@ -204,6 +209,30 @@ enum JobSubCommand {
         )]
         truncate: usize,
     },
+    #[structopt(about = "Inserts and fetches query job while blocking. (Up to 2Gb)")]
+    Query {
+        #[structopt(long, help = "the query to run (or stdin if not set)")]
+        query: Option<String>,
+        #[structopt(
+            long,
+            help = "save the output of the job in the specified file (if not specified, output to stdout)"
+        )]
+        output: Option<PathBuf>,
+        #[structopt(long, help = "specify the output format", default_value = "pretty")]
+        format: OutputFormat,
+        #[structopt(
+            long,
+            help = "truncate the output to the specified number of rows (only used when `--format=pretty`)",
+            default_value = "10"
+        )]
+        truncate: usize,
+        #[structopt(
+            long,
+            help = "the number of seconds to wait for the query",
+            default_value = "600"
+        )]
+        timeout: u64,
+    },
 }
 
 #[derive(Clone, Debug, StructOpt)]
@@ -358,7 +387,7 @@ async fn main() -> Result<()> {
 
                 println!("{}", plan);
 
-                if dry_run {
+                if dry_run || plan.is_noop() {
                     return Ok(());
                 }
 
@@ -397,13 +426,7 @@ async fn main() -> Result<()> {
                 job::print_jobs(jobs);
             }
             JobSubCommand::Insert { query } => {
-                let query = if let Some(query) = query {
-                    query
-                } else {
-                    let mut buf = String::new();
-                    std::io::stdin().read_to_string(&mut buf)?;
-                    buf
-                };
+                let query = query_or_stdin(query)?;
                 let mut client = config.new_client(opt.disable_tls).await?;
                 let job = job::insert_job(&mut client, &query).await?;
                 println!("{}", job.id);
@@ -426,49 +449,86 @@ async fn main() -> Result<()> {
                     return Err(Error::msg("job has not finished yet"));
                 }
 
-                let fetch = job::Fetch::new(&mut client, &job);
+                let fetch = job::Fetch::fetch(&mut client, &job);
 
-                match format {
-                    OutputFormat::Csv => {
-                        if let Some(path) = output {
-                            let file = File::create(path.as_path())?;
-                            fetch.write_csv(file).await?;
-                        } else {
-                            fetch.write_csv(std::io::stdout()).await?;
-                        }
-                    }
-                    OutputFormat::Pretty => {
-                        if let Some(_) = output {
-                            return Err(Error::msg(
-                                "using `--output` not supported when `--format=pretty`",
-                            ));
-                        } else {
-                            let mut buf = Vec::new();
-
-                            fetch.truncate(truncate).write_csv(&mut buf).await?;
-
-                            let mut reader = csv_crate::ReaderBuilder::new()
-                                .has_headers(false)
-                                .from_reader(buf.as_slice());
-
-                            let mut table = Table::new();
-                            let mut num_cols = 0;
-                            for record in reader.records().take(truncate) {
-                                let record = record?;
-                                num_cols = record.len();
-                                let row: Row = record.iter().map(|val| Cell::new(val)).collect();
-                                table.add_row(row);
-                            }
-
-                            table.add_row((0..num_cols).into_iter().map(|_| "...").collect());
-
-                            table.printstd();
-                        }
-                    }
-                }
+                output_rows(output, format, truncate, fetch).await?
+            }
+            JobSubCommand::Query {
+                query,
+                output,
+                format,
+                truncate,
+                timeout,
+            } => {
+                let query = query_or_stdin(query)?;
+                let mut client = config.new_client(opt.disable_tls).await?;
+                let job = Job {
+                    query,
+                    ..Default::default()
+                };
+                let fetch = job::Fetch::query(&mut client, &job, timeout);
+                output_rows(output, format, truncate, fetch).await?
             }
         },
     }
 
+    Ok(())
+}
+
+fn query_or_stdin(query: Option<String>) -> Result<String> {
+    let query = if let Some(query) = query {
+        query
+    } else {
+        let mut buf = String::new();
+        std::io::stdin().read_to_string(&mut buf)?;
+        buf
+    };
+    Ok(query)
+}
+
+async fn output_rows(
+    output: Option<PathBuf>,
+    format: OutputFormat,
+    truncate: usize,
+    fetch: Fetch<'_>,
+) -> Result<()> {
+    match format {
+        OutputFormat::Csv => {
+            if let Some(path) = output {
+                let file = File::create(path.as_path())?;
+                fetch.write_csv(file).await?;
+            } else {
+                fetch.write_csv(std::io::stdout()).await?;
+            }
+        }
+        OutputFormat::Pretty => {
+            if let Some(_) = output {
+                return Err(Error::msg(
+                    "using `--output` not supported when `--format=pretty`",
+                ));
+            } else {
+                let mut buf = Vec::new();
+
+                fetch.truncate(truncate).write_csv(&mut buf).await?;
+
+                let mut reader = csv_crate::ReaderBuilder::new()
+                    .has_headers(false)
+                    .from_reader(buf.as_slice());
+
+                let mut table = Table::new();
+                let mut num_cols = 0;
+                for record in reader.records().take(truncate) {
+                    let record = record?;
+                    num_cols = record.len();
+                    let row: Row = record.iter().map(|val| Cell::new(val)).collect();
+                    table.add_row(row);
+                }
+
+                table.add_row((0..num_cols).into_iter().map(|_| "...").collect());
+
+                table.printstd();
+            }
+        }
+    }
     Ok(())
 }
