@@ -366,3 +366,42 @@ impl ExprTryComplete for Mode {
         }
     }
 }
+
+#[derive(Debug, PartialEq, Serialize, Deserialize, Copy, Clone)]
+pub enum Domain {
+    Discrete { max: i64, min: i64, step: u64 },
+    Continuous { min: f64, max: f64 },
+    Categorical,
+}
+
+impl Default for Domain {
+    fn default() -> Self {
+        Self::Categorical
+    }
+}
+
+impl std::fmt::Display for Domain {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Discrete { max, min, step } => write!(f, "discrete({}:{}:{})", min, step, max),
+            Self::Continuous { max, min } => write!(f, "continuous({}:{})", min, max),
+            Self::Categorical => write!(f, "categorical"),
+        }
+    }
+}
+
+impl ExprTryComplete for Domain {
+    fn try_complete(node: Expr<&Self>) -> ValidateResult<Self> {
+        match node {
+            Expr::Column(Column(ck)) => {
+                error!(Internal, (format!("tried to complete a column {}", ck)))
+            }
+            Expr::As(As { expr, .. }) => Ok(expr.clone()),
+            Expr::BinaryOp(BinaryOp { left, op, right }) => {
+                // TODO: this can be inferred for the arithmetic operations
+                Ok(Self::Categorical)
+            }
+            _ => Ok(Self::Categorical), // default is Ok(opaque)
+        }
+    }
+}

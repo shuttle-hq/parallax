@@ -8,7 +8,7 @@ edition = "2018"
 
 [features]
 default = ["google-bigquery"]
-google-bigquery = ["gcp", "google-bigquery2", "hyper", "hyper-tls", "yup-oauth2", "http", "hyper-legacy"]
+google-bigquery = ["gcp", "google-bigquery2", "hyper", "hyper-tls", "yup-oauth2", "http", "hyper-legacy", "bigquery-storage"]
 gcp = []
 monitoring = ["sentry"]
 
@@ -55,7 +55,8 @@ http = { version = "0.2", optional = true }
 hyper-legacy = { package = "hyper", version = "0.12.27", optional = true }
 hyper = { version = "0.13.2", optional = true}
 hyper-tls = { version = "0.4.1", optional = true }
-bigquery-storage = { path = "../../bigquery-storage"}
+
+bigquery-storage = { path = "../../bigquery-storage", optional = true }
 
 # for the probe
 tide = "0.5.1"

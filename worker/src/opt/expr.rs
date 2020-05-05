@@ -3,8 +3,8 @@ use sqlparser::ast;
 use crate::common::*;
 
 use super::{
-    AudienceBoard, CompositionError, Context, ContextKey, DataType, ExprAnsatz, ExprTryComplete,
-    Mode, ToAnsatz, ToContext, ValidateError, ValidateResult,
+    AudienceBoard, CompositionError, Context, ContextKey, DataType, Domain, ExprAnsatz,
+    ExprTryComplete, Mode, ToAnsatz, ToContext, ValidateError, ValidateResult,
 };
 
 copy_ast_enum!(
@@ -285,9 +285,10 @@ impl ToAnsatz for ExprT {
 }
 
 derive_try_complete_expr! {
-    #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq,)]
+    #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq,)]
     pub struct ExprMeta {
         ty: DataType,
+        domain: Domain,
         audience: HashSet<BlockType>,
         mode: Mode,
     }
@@ -297,6 +298,7 @@ impl Default for ExprMeta {
     fn default() -> Self {
         Self {
             ty: DataType::default(),
+            domain: Domain::default(),
             audience: HashSet::new(),
             mode: Mode::default(),
         }

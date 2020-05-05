@@ -20,9 +20,14 @@ use crate::gcp::{
 use crate::Result;
 
 use crate::opt::{
-    plan::Step, rel::*, Context, ContextError, ContextKey, DataType, ExprMeta, Mode, RelAnsatz,
-    ToAnsatz, ValidateError, ValidateResult,
+    plan::Step, rel::*, Context, ContextError, ContextKey, DataType, Domain, ExprMeta, Mode,
+    RelAnsatz, ToAnsatz, ValidateError, ValidateResult,
 };
+
+pub struct ExprExtraMeta {
+    min: String,
+    max: String,
+}
 
 pub struct BigQuery<O = ()> {
     dataset: DatasetId,
@@ -154,58 +159,87 @@ where
             .and_then(|s| s.fields)
             .ok_or(Error::new("expected a schema"))?;
 
-        let columns: Context<ExprMeta> = schema
-            .into_iter()
-            .map(|field| {
-                let name = field.name.ok_or(Error::new("expected a field name"))?;
-                let context_key = ContextKey::with_name(&name);
+        let mut columns = Context::new();
 
-                let ty = field
-                    .type_
-                    .ok_or(Error::new("expected a field type"))
-                    .and_then(|type_| match type_.as_str() {
-                        "STRING" => Ok(DataType::String),
-                        "BYTES" => Ok(DataType::Bytes),
-                        "INTEGER" | "INT64" => Ok(DataType::Integer),
-                        "FLOAT" | "FLOAT64" => Ok(DataType::Float),
-                        "BOOLEAN" | "BOOL" => Ok(DataType::Boolean),
-                        "DATETIME" | "TIMESTAMP" => Ok(DataType::Timestamp),
-                        "DATE" => Ok(DataType::Date),
-                        type_str => {
-                            let err_msg = format!("BigQuery type '{}'", type_str);
-                            let err = Error::new_detailed(
-                                "BigQuery data type not supported",
-                                NotSupportedError { feature: err_msg },
-                            );
-                            Err(err)
+        for field in schema.into_iter() {
+            let name = field.name.ok_or(Error::new("expected a field name"))?;
+            let context_key = ContextKey::with_name(&name);
+
+            let ty = field
+                .type_
+                .ok_or(Error::new("expected a field type"))
+                .and_then(|type_| match type_.as_str() {
+                    "STRING" => Ok(DataType::String),
+                    "BYTES" => Ok(DataType::Bytes),
+                    "INTEGER" | "INT64" => Ok(DataType::Integer),
+                    "FLOAT" | "FLOAT64" => Ok(DataType::Float),
+                    "BOOLEAN" | "BOOL" => Ok(DataType::Boolean),
+                    "DATETIME" | "TIMESTAMP" => Ok(DataType::Timestamp),
+                    "DATE" => Ok(DataType::Date),
+                    type_str => {
+                        let err_msg = format!("BigQuery type '{}'", type_str);
+                        let err = Error::new_detailed(
+                            "BigQuery data type not supported",
+                            NotSupportedError { feature: err_msg },
+                        );
+                        Err(err)
+                    }
+                })?;
+
+            let mode = field
+                .mode
+                .map(|mode| match mode.as_str() {
+                    "NULLABLE" => Ok(Mode::Nullable),
+                    "REQUIRED" => Ok(Mode::Required),
+                    mode_str => {
+                        let err_msg = format!("BigQuery mode '{}'", mode_str);
+                        let err = Error::new_detailed(
+                            "BigQuery table mode",
+                            NotSupportedError { feature: err_msg },
+                        );
+                        Err(err)
+                    }
+                })
+                .transpose()?
+                .unwrap_or(Mode::Nullable);
+
+            let domain = if ty.is_numeric() {
+                let ExprExtraMeta { min, max } = self
+                    .get_extra_meta(project_id, dataset_id, table_id, &name)
+                    .await?;
+
+                try {
+                    match ty {
+                        DataType::Integer => {
+                            let min = min.parse()?;
+                            let max = max.parse()?;
+                            Domain::Discrete { min, max, step: 1 }
                         }
-                    })?;
-
-                let mode = field
-                    .mode
-                    .map(|mode| match mode.as_str() {
-                        "NULLABLE" => Ok(Mode::Nullable),
-                        "REQUIRED" => Ok(Mode::Required),
-                        mode_str => {
-                            let err_msg = format!("BigQuery mode '{}'", mode_str);
-                            let err = Error::new_detailed(
-                                "BigQuery table mode",
-                                NotSupportedError { feature: err_msg },
-                            );
-                            Err(err)
+                        DataType::Float => {
+                            let min = min.parse()?;
+                            let max = max.parse()?;
+                            Domain::Continuous { min, max }
                         }
-                    })
-                    .transpose()?
-                    .unwrap_or(Mode::Nullable);
+                        _ => unreachable!(),
+                    }
+                }
+            } else {
+                Ok(Domain::Categorical)
+            };
 
-                let expr_meta = ExprMeta {
-                    ty,
-                    mode,
-                    ..Default::default()
-                };
-                Ok((context_key, expr_meta))
-            })
-            .collect::<Result<_>>()?;
+            let domain = domain.map_err(|_: Box<dyn std::error::Error>| {
+                Error::new("invalid response from backend")
+            })?;
+
+            let expr_meta = ExprMeta {
+                ty,
+                mode,
+                domain,
+                ..Default::default()
+            };
+
+            columns.insert(context_key, expr_meta);
+        }
 
         let mut table_meta = TableMeta::from(columns).unwrap();
         let context_key = ContextKey::with_name(table_id)
@@ -213,6 +247,50 @@ where
             .and_prefix(project_id);
         table_meta.source = Some(context_key);
         Ok(table_meta)
+    }
+
+    async fn get_extra_meta(
+        &self,
+        project_id: &str,
+        dataset_id: &str,
+        table_id: &str,
+        column_name: &str,
+    ) -> Result<ExprExtraMeta> {
+        let mut builder = JobBuilder::default();
+        builder.project_id(&self.cache.project_id).query(
+            &format!(
+                "SELECT MAX({}), MIN({}) FROM {}.{}.{}",
+                column_name, column_name, project_id, dataset_id, table_id
+            ),
+            TableRef {
+                project_id: self.cache.project_id.clone(),
+                dataset_id: self.cache.dataset_id.clone(),
+                table_id: uuid::Uuid::new_v4().to_simple().to_string(),
+            },
+        );
+        let job_request = builder.build()?;
+
+        let job = self.to_inner().run_to_completion(job_request).await?;
+
+        let job_id = job
+            .job_reference
+            .and_then(|jr| jr.job_id)
+            .ok_or(Error::new("invalid response from backend"))?;
+
+        let results = self
+            .to_inner()
+            .get_query_results(&self.cache.project_id, &job_id)
+            .await?;
+
+        results
+            .rows
+            .and_then(|mut rows| {
+                let mut cells = rows.pop()?.f?;
+                let min = cells.pop()?.v?;
+                let max = cells.pop()?.v?;
+                Some(ExprExtraMeta { min, max })
+            })
+            .ok_or(Error::new("invalid response from backend"))
     }
 }
 
@@ -468,6 +546,8 @@ pub mod tests {
     use super::*;
     use crate::gcp::Client;
 
+    use tokio::runtime::Runtime;
+
     const PROJECT_ID: &'static str = "openquery-dev";
     const TEST_DATASET_ID: &'static str = "yelp";
     const STAGING_DATASET_ID: &'static str = "cache";
@@ -504,5 +584,29 @@ pub mod tests {
             big_query: client,
             storage: storage_client,
         }
+    }
+
+    #[test]
+    fn bigquery_meta_with_domain() {
+        let client = mk_big_query();
+        Runtime::new().unwrap().block_on(async {
+            let table_meta = client
+                .get_table_from_backend("openquery-dev", "yelp", "business")
+                .await
+                .unwrap();
+            let domain = table_meta
+                .columns
+                .get(&ContextKey::with_name("review_count"))
+                .unwrap()
+                .domain;
+            assert_eq!(
+                domain,
+                Domain::Discrete {
+                    max: 8348,
+                    min: 3,
+                    step: 1
+                }
+            );
+        });
     }
 }

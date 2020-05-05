@@ -116,7 +116,9 @@ pub mod error;
 pub use error::{ValidateError, ValidateResult};
 
 pub mod meta;
-pub use crate::opt::meta::{AudienceBoard, DataType, ExprTryComplete, Mode, RelTryComplete};
+pub use crate::opt::meta::{
+    AudienceBoard, DataType, Domain, ExprTryComplete, Mode, RelTryComplete,
+};
 
 pub mod ansatz;
 pub use ansatz::{CompositionError, ExprAnsatz, RelAnsatz, ToAnsatz};

@@ -265,7 +265,7 @@ mod tests {
             let req = mk_req(GetJobRequest { job_id: job.id });
             let job = client.get_job(req).await.unwrap().into_inner().job.unwrap();
 
-            tokio::time::delay_for(std::time::Duration::from_secs(10)).await;
+            tokio::time::delay_for(std::time::Duration::from_secs(60)).await;
             let req = mk_req(GetJobRequest { job_id: job.id });
             let job = client.get_job(req).await.unwrap().into_inner().job.unwrap();
 
@@ -340,7 +340,7 @@ mod tests {
             let req = mk_req(GetJobRequest { job_id: job.id });
             let job = client.get_job(req).await.unwrap().into_inner().job.unwrap();
 
-            tokio::time::delay_for(std::time::Duration::from_secs(10)).await;
+            tokio::time::delay_for(std::time::Duration::from_secs(60)).await;
             let req = mk_req(GetJobRequest { job_id: job.id });
             let job = client.get_job(req).await.unwrap().into_inner().job.unwrap();
             job

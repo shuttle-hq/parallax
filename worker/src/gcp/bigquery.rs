@@ -1,6 +1,7 @@
 use google_bigquery2::{
-    Bigquery, Job as BigQueryJob, JobConfiguration, JobConfigurationExtract, JobConfigurationLoad,
-    JobConfigurationQuery, JobStatus, QueryRequest, Table, TableList, TableReference,
+    Bigquery, GetQueryResultsResponse, Job as BigQueryJob, JobConfiguration,
+    JobConfigurationExtract, JobConfigurationLoad, JobConfigurationQuery, JobStatus, QueryRequest,
+    Table, TableList, TableReference,
 };
 
 use crate::gcp::{self, errors::*, oauth};
@@ -58,9 +59,6 @@ impl Into<TableReference> for TableRef {
 }
 
 impl JobBuilder {
-    // TODO methods like query or extract should build.
-    // It's a better API. If not, you can do .query(...).extract(...).build()
-
     pub fn project_id(&mut self, project_id: &str) -> &mut Self {
         self.project_id = Some(project_id.to_string());
         self
@@ -216,6 +214,20 @@ where
     pub async fn send(&self, req: JobRequest) -> Result<BigQueryJob> {
         self.gcp
             .api_request(req.method.clone(), req.uri.parse()?, req.job)
+            .await
+    }
+    pub async fn get_query_results(
+        &self,
+        project_id: &str,
+        job_id: &str,
+    ) -> Result<GetQueryResultsResponse> {
+        let uri = format!(
+            "https://bigquery.googleapis.com/bigquery/v2\
+             /projects/{}/queries/{}",
+            project_id, job_id
+        );
+        self.gcp
+            .api_request::<(), _>(Method::GET, uri.parse()?, None)
             .await
     }
     pub async fn run_to_completion(&self, req: JobRequest) -> Result<BigQueryJob> {
