@@ -3,18 +3,42 @@ use sqlparser::ast;
 use crate::common::*;
 
 use super::{
-    expr::*, CompositionError, Context, ContextKey, ExprAnsatz, RelAnsatz, RelTryComplete,
-    ToAnsatz, ToContext, TryToContext, ValidateError, ValidateResult,
+    expr::*, CompositionError, Context, ContextKey, ExprAnsatz, ExprTryComplete, RebaseExpr,
+    RelAnsatz, RelTryComplete, ToAnsatz, ToContext, TryToContext, ValidateError, ValidateResult,
 };
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum JoinConstraint {
-    On(ExprT),
+pub enum JoinConstraint<E = ExprT> {
+    On(E),
     Using(Vec<ContextKey>),
     Natural,
 }
 
-impl TryInto<ast::JoinConstraint> for JoinConstraint {
+impl<E> JoinConstraint<E> {
+    pub async fn map_expressions_async<'a, O, F, Fut>(&'a self, f: F) -> JoinConstraint<O>
+    where
+        F: Fn(&'a E) -> Fut,
+        Fut: Future<Output = O> + 'a,
+    {
+        match self {
+            JoinConstraint::On(e) => JoinConstraint::On(f(e).await),
+            JoinConstraint::Using(what) => JoinConstraint::Using(what.clone()),
+            JoinConstraint::Natural => JoinConstraint::Natural,
+        }
+    }
+    pub fn map_expressions<O, F: Fn(&E) -> O>(&self, f: F) -> JoinConstraint<O> {
+        match self {
+            JoinConstraint::On(e) => JoinConstraint::On(f(e)),
+            JoinConstraint::Using(what) => JoinConstraint::Using(what.clone()),
+            JoinConstraint::Natural => JoinConstraint::Natural,
+        }
+    }
+}
+
+impl<E> TryInto<ast::JoinConstraint> for JoinConstraint<E>
+where
+    E: ToAnsatz<Ansatz = ExprAnsatz>,
+{
     type Error = CompositionError;
     fn try_into(self) -> Result<ast::JoinConstraint, Self::Error> {
         let out = match self {
@@ -30,15 +54,18 @@ impl TryInto<ast::JoinConstraint> for JoinConstraint {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum JoinOperator {
-    Inner(JoinConstraint),
-    LeftOuter(JoinConstraint),
-    RightOuter(JoinConstraint),
-    FullOuter(JoinConstraint),
+pub enum JoinOperator<E = ExprT> {
+    Inner(JoinConstraint<E>),
+    LeftOuter(JoinConstraint<E>),
+    RightOuter(JoinConstraint<E>),
+    FullOuter(JoinConstraint<E>),
     CrossJoin,
 }
 
-impl TryInto<ast::JoinOperator> for JoinOperator {
+impl<E> TryInto<ast::JoinOperator> for JoinOperator<E>
+where
+    E: ToAnsatz<Ansatz = ExprAnsatz>,
+{
     type Error = CompositionError;
     fn try_into(self) -> Result<ast::JoinOperator, Self::Error> {
         let out = match self {
@@ -49,6 +76,37 @@ impl TryInto<ast::JoinOperator> for JoinOperator {
             JoinOperator::CrossJoin => ast::JoinOperator::CrossJoin,
         };
         Ok(out)
+    }
+}
+
+impl<E> JoinOperator<E> {
+    pub async fn map_expressions_async<'a, O, F, Fut>(&'a self, f: F) -> JoinOperator<O>
+    where
+        F: Fn(&'a E) -> Fut,
+        Fut: Future<Output = O> + Send + 'a,
+    {
+        match self {
+            JoinOperator::Inner(inner) => JoinOperator::Inner(inner.map_expressions_async(f).await),
+            JoinOperator::LeftOuter(inner) => {
+                JoinOperator::LeftOuter(inner.map_expressions_async(f).await)
+            }
+            JoinOperator::RightOuter(inner) => {
+                JoinOperator::RightOuter(inner.map_expressions_async(f).await)
+            }
+            JoinOperator::FullOuter(inner) => {
+                JoinOperator::FullOuter(inner.map_expressions_async(f).await)
+            }
+            JoinOperator::CrossJoin => JoinOperator::CrossJoin,
+        }
+    }
+    fn map_expressions<O, F: Fn(&E) -> O>(&self, f: F) -> JoinOperator<O> {
+        match self {
+            JoinOperator::Inner(inner) => JoinOperator::Inner(inner.map_expressions(f)),
+            JoinOperator::LeftOuter(inner) => JoinOperator::LeftOuter(inner.map_expressions(f)),
+            JoinOperator::RightOuter(inner) => JoinOperator::RightOuter(inner.map_expressions(f)),
+            JoinOperator::FullOuter(inner) => JoinOperator::FullOuter(inner.map_expressions(f)),
+            JoinOperator::CrossJoin => JoinOperator::CrossJoin,
+        }
     }
 }
 
@@ -88,7 +146,7 @@ entish! {
         Join {
             pub left: Self,
             pub right: Self,
-            pub operator: JoinOperator
+            pub operator: JoinOperator<Expr>
         },
         Set {
             pub operator: SetOperator,
@@ -163,7 +221,7 @@ to_ansatz! {
                 right: Box::new(right.into())
             }
         },
-        Join<> { left, right, operator } => {
+        Join<Expr,> { left, right, operator } => {
             let mut out: ast::TableWithJoins = left.into();
             let join = ast::Join {
                 relation: right.into(),
@@ -217,32 +275,303 @@ pub type Rel<T> = GenericRel<ExprT, T>;
 
 /// Relation Tree
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct RelT<B = TableMeta> {
-    pub(crate) root: Rel<Arc<RelT<B>>>,
+pub struct RelT<B = TableMeta, E = ExprT> {
+    pub(crate) root: GenericRel<E, Arc<RelT<B, E>>>,
     pub(crate) board: ValidateResult<B>,
 }
 
-impl<B> RelT<B> {
+// This stuff is boilerplate and should be in Entish
+impl<E, C> GenericRel<E, C>
+where
+    E: Clone,
+    C: Clone,
+{
+    pub async fn map_async<'a, F, Fut, CC>(&'a self, f: F) -> GenericRel<E, CC>
+    where
+        F: Fn(&'a C) -> Fut,
+        Fut: Future<Output = CC> + Send + 'a,
+    {
+        map_variants!(
+            self as GenericRel {
+                Aggregation => {
+                    attributes: { attributes.clone() },
+                    group_by: { group_by.clone() },
+                    from: { f(from).await },
+                },
+                Projection => {
+                    attributes: { attributes.clone() },
+                    from: { f(from).await },
+                },
+                Selection => {
+                    from: { f(from).await },
+                    where_: { where_.clone() },
+                },
+                Offset => {
+                    offset: { offset.clone() },
+                    from: { f(from).await },
+                },
+                Limit => {
+                    number_rows: { number_rows.clone() },
+                    from: { f(from).await },
+                },
+                OrderBy => {
+                    order: { order.clone() },
+                    by: { by.clone() },
+                    from: { f(from).await },
+                },
+                Join => {
+                    left: { f(left).await },
+                    right: { f(right).await },
+                    operator: { operator.clone() },
+                },
+                Set => {
+                    operator: { operator.clone() },
+                    left: { f(left).await },
+                    right: { f(right).await },
+                },
+                Distinct => {
+                    from: { f(from).await },
+                },
+                WithAlias => {
+                    from: { f(from).await },
+                    alias: { alias.clone() },
+                },
+                #[unnamed] Table => {
+                    context_key: { context_key.clone() },
+                },
+            }
+        )
+    }
+    pub async fn map_expressions_async<'a, F, Fut, EE>(&'a self, f: &'a F) -> GenericRel<EE, C>
+    where
+        F: Fn(&'a E) -> Fut,
+        Fut: Future<Output = EE> + Send + 'a,
+    {
+        map_variants!(
+            self as GenericRel {
+                Aggregation => {
+                    attributes: { join_all(attributes.iter().map(|elt| f(elt))).await },
+                    group_by: { join_all(group_by.iter().map(|elt| f(elt))).await },
+                    from: { from.clone() },
+                },
+                Projection => {
+                    attributes: { join_all(attributes.iter().map(|elt| f(elt))).await },
+                    from: { from.clone() },
+                },
+                Selection => {
+                    from: { from.clone() },
+                    where_: { f(where_).await },
+                },
+                Offset => {
+                    offset: { f(offset).await },
+                    from: { from.clone() },
+                },
+                Limit => {
+                    number_rows: { f(number_rows).await },
+                    from: { from.clone() },
+                },
+                OrderBy => {
+                    order: { order.clone() },
+                    by: { join_all(by.iter().map(|elt| f(elt))).await },
+                    from: { from.clone() },
+                },
+                Join => {
+                    left: { left.clone() },
+                    right: { right.clone() },
+                    operator: { operator.map_expressions_async(f).await },
+                },
+                Set => {
+                    operator: { operator.clone() },
+                    left: { left.clone() },
+                    right: { right.clone() },
+                },
+                Distinct => {
+                    from: { from.clone() },
+                },
+                WithAlias => {
+                    from: { from.clone() },
+                    alias: { alias.clone() },
+                },
+                #[unnamed] Table => {
+                    context_key: { context_key.clone() },
+                },
+            }
+        )
+    }
+    pub fn map_expressions<O, F: Fn(&E) -> O>(&self, f: &F) -> GenericRel<O, C> {
+        map_variants!(
+            self as GenericRel {
+                Aggregation => {
+                    attributes: { attributes.iter().map(f).collect() },
+                    group_by: { group_by.iter().map(f).collect() },
+                    from: { from.clone() },
+                },
+                Projection => {
+                    attributes: { attributes.iter().map(f).collect() },
+                    from: { from.clone() },
+                },
+                Selection => {
+                    from: { from.clone() },
+                    where_: { f(where_) },
+                },
+                Offset => {
+                    offset: { f(offset) },
+                    from: { from.clone() },
+                },
+                Limit => {
+                    number_rows: { f(number_rows) },
+                    from: { from.clone() },
+                },
+                OrderBy => {
+                    order: { order.clone() },
+                    by: { by.iter().map(f).collect() },
+                    from: { from.clone() },
+                },
+                Join => {
+                    left: { left.clone() },
+                    right: { right.clone() },
+                    operator: { operator.map_expressions(f) },
+                },
+                Set => {
+                    operator: { operator.clone() },
+                    left: { left.clone() },
+                    right: { right.clone() },
+                },
+                Distinct => {
+                    from: { from.clone() },
+                },
+                WithAlias => {
+                    from: { from.clone() },
+                    alias: { alias.clone() },
+                },
+                #[unnamed] Table => {
+                    context_key: { context_key.clone() },
+                },
+            }
+        )
+    }
+}
+
+impl<B, E> RelT<B, E> {
     pub fn is_leaf(&self) -> bool {
         match &self.root {
-            Rel::Table(..) => true,
+            GenericRel::Table(..) => true,
             _ => false,
         }
     }
 }
 
-impl<B> RelT<B>
+/// A rule for rebasing a relation tree. Note that rebasing a relation tree
+/// means also rebasing all the wrapped expression trees.
+#[async_trait]
+pub trait RebaseRel<Meta, ExprMeta>: Send + Sync {
+    /// The type of the new (after rebase) expression tree labels
+    type NewExprMeta: ExprTryComplete + Send + Sync + Clone;
+    /// The type of the new (after rebase) relation tree labels
+    type NewMeta: RelTryComplete<ExprT<Self::NewExprMeta>> + Send + Sync + Clone;
+    /// The type of the associated rebase rule for wrapped expression trees
+    type AsRebaseExpr: RebaseExpr<ExprMeta, NewMeta = Self::NewExprMeta>;
+    /// To what do we want to rebase the given node `at`? If returns `None`, we do not
+    /// touch it and, instead, the recursion carries on.
+    async fn maybe_at(
+        &self,
+        at: &RelT<Meta, ExprT<ExprMeta>>,
+    ) -> Option<RelT<Self::NewMeta, ExprT<Self::NewExprMeta>>>;
+    /// Derive the associated expression rebase rule. This could depend on the
+    /// current relation node type (`root`).
+    async fn as_rebase_expr(
+        &self,
+        root: &GenericRel<ExprT<ExprMeta>, RelT<Self::NewMeta, ExprT<Self::NewExprMeta>>>,
+    ) -> Self::AsRebaseExpr;
+}
+
+#[async_trait]
+impl RebaseRel<TableMeta, ExprMeta> for Context<TableMeta> {
+    type NewExprMeta = ExprMeta;
+    type NewMeta = TableMeta;
+    type AsRebaseExpr = Context<ExprMeta>;
+    async fn maybe_at(
+        &self,
+        at: &RelT<TableMeta, ExprT<ExprMeta>>,
+    ) -> Option<RelT<Self::NewMeta, ExprT<Self::NewExprMeta>>> {
+        match &at.root {
+            GenericRel::Table(Table(context_key)) => Some(RelT {
+                root: GenericRel::Table(Table(context_key.clone())),
+                board: self
+                    .get(context_key)
+                    .map(|v| v.clone())
+                    .map_err(|e| e.into_table_error()),
+            }),
+            _ => None,
+        }
+    }
+    async fn as_rebase_expr(
+        &self,
+        root: &GenericRel<ExprT<ExprMeta>, RelT<Self::NewMeta, ExprT<Self::NewExprMeta>>>,
+    ) -> Self::AsRebaseExpr {
+        let mut inherited_ctx = Context::new();
+        root.map(&mut |child| {
+            if let Ok(ctx) = child.try_to_context() {
+                inherited_ctx.extend(ctx);
+            }
+        });
+        inherited_ctx
+    }
+}
+
+impl<Meta, ExprMeta> RelT<Meta, ExprT<ExprMeta>>
 where
-    B: RelTryComplete,
+    Meta: Send + Sync + Clone,
+    ExprMeta: Send + Sync + Clone,
 {
-    pub fn from<T: Into<Rel<Self>>>(t: T) -> Self {
-        let rel: Rel<Self> = t.into();
+    /// Asynchronously rebase the relation tree using the rebase rule `R`.
+    /// This can be used to replay the tree against a different context,
+    /// or to recursively transform subtrees.
+    pub fn rebase<'a, R>(
+        &'a self,
+        r: &'a R,
+    ) -> impl Future<Output = RelT<R::NewMeta, ExprT<R::NewExprMeta>>> + Send + 'a
+    where
+        R: RebaseRel<Meta, ExprMeta> + Send + Sync,
+    {
+        async move {
+            if let Some(new_base) = r.maybe_at(self).await {
+                new_base
+            } else {
+                let rebased_root = self
+                    .root
+                    .map_async(async move |child: &Arc<Self>| child.rebase(r).await)
+                    .await;
+
+                let inherited = r.as_rebase_expr(&rebased_root).await;
+
+                let inherited_ref = &inherited;
+
+                let rebased_root = rebased_root
+                    .map_expressions_async(&async move |expr: &ExprT<ExprMeta>| {
+                        expr.rebase(inherited_ref).await
+                    })
+                    .await;
+
+                RelT::from(rebased_root)
+            }
+        }
+        .boxed()
+    }
+}
+
+impl<B, E> RelT<B, E>
+where
+    B: RelTryComplete<E>,
+    E: Clone,
+{
+    pub fn from<T: Into<GenericRel<E, Self>>>(t: T) -> Self {
+        let rel: GenericRel<E, Self> = t.into();
         let root = rel.map_owned(&mut |c| Arc::new(c));
         Self::from_wrapped(root)
     }
-
-    pub fn from_wrapped<T: Into<Rel<Arc<Self>>>>(t: T) -> Self {
-        let root: Rel<Arc<Self>> = t.into();
+    pub fn from_wrapped<T: Into<GenericRel<E, Arc<Self>>>>(t: T) -> Self {
+        let root: GenericRel<E, Arc<Self>> = t.into();
         let board = root
             .map(&mut |c| c.board.as_ref())
             .into_result()
@@ -262,15 +591,15 @@ impl TryToContext for RelT {
     }
 }
 
-impl<T> RelTree for T where T: GenericRelTree<ExprT> {}
-
-pub trait RelTree: GenericRelTree<ExprT> {}
-
-impl GenericRelTree<ExprT> for RelT {
-    fn as_ref(&self) -> Rel<&Self> {
+impl<B, E> GenericRelTree<E> for RelT<B, E>
+where
+    B: Clone,
+    E: Clone,
+{
+    fn as_ref(&self) -> GenericRel<E, &Self> {
         self.root.map(&mut |n| n.as_ref())
     }
-    fn into_inner(self) -> Rel<Self> {
+    fn into_inner(self) -> GenericRel<E, Self> {
         self.root.map_owned(&mut |n| (*n).clone())
     }
 }

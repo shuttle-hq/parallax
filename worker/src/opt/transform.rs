@@ -3,13 +3,11 @@ use crate::common::*;
 use super::{
     expr::As, AudienceBoard, Between, Column, Context, ContextKey, Expr, ExprMeta, ExprT, ExprTree,
     GenericRel, GenericRelTree, Hash, HashAlgorithm, Literal, LiteralValue, Projection, Rel, RelT,
-    RelTree, Table, TableMeta, ToContext, TryToContext, ValidateError,
+    Table, TableMeta, ToContext, TryToContext, ValidateError,
 };
 use crate::opt::ContextError;
 
-#[derive(Debug, Clone)]
-pub struct Policy(pub policy::Policy);
-
+/// Small helper to figure out if a given context key matches any of the given field patterns
 fn matches_in<'a, I: IntoIterator<Item = &'a String>>(
     iter: I,
     key: &'a ContextKey,
@@ -22,38 +20,66 @@ fn matches_in<'a, I: IntoIterator<Item = &'a String>>(
     return Ok(false);
 }
 
-impl ExprTransform for Policy {
+#[derive(Debug, Clone)]
+pub struct Policy(pub policy::Policy);
+
+impl ExprTransform for WhitelistPolicy {
     fn transform_expr(&self, expr: &ExprT, ctx: &Context<ExprMeta>) -> Result<ExprT, Error> {
         match expr.as_ref() {
             Expr::Column(Column(context_key)) => {
-                let matches = match &self.0 {
-                    policy::Policy::Whitelist(WhitelistPolicy { fields, .. })
-                    | policy::Policy::Hash(HashPolicy { fields, .. })
-                    | policy::Policy::Obfuscate(ObfuscatePolicy { fields, .. }) => {
-                        matches_in(fields.iter(), &context_key)?
-                    }
-                };
-
-                if matches {
-                    match &self.0 {
-                        policy::Policy::Whitelist(WhitelistPolicy { .. }) => Ok(expr.clone()),
-                        policy::Policy::Hash(HashPolicy { salt, .. }) => {
-                            Ok(ExprT::from(Expr::Hash(Hash {
-                                algo: HashAlgorithm::default(),
-                                expr: expr.clone(),
-                                salt: salt.clone(),
-                            })))
-                        }
-                        policy::Policy::Obfuscate(ObfuscatePolicy { .. }) => {
-                            let expr = ExprT::from(Expr::Literal(Literal(LiteralValue::Null)));
-                            let alias = context_key.name().to_string();
-                            Ok(ExprT::from(Expr::As(As { expr, alias })))
-                        }
-                    }
+                if matches_in(self.fields.iter(), &context_key)? {
+                    Ok(expr.clone())
                 } else {
                     Err(Error::NoMatch)
                 }
             }
+            _ => Err(Error::NoMatch),
+        }
+    }
+}
+
+impl ExprTransform for HashPolicy {
+    fn transform_expr(&self, expr: &ExprT, ctx: &Context<ExprMeta>) -> Result<ExprT, Error> {
+        match expr.as_ref() {
+            Expr::Column(Column(context_key)) => {
+                if matches_in(self.fields.iter(), &context_key)? {
+                    Ok(ExprT::from(Expr::Hash(Hash {
+                        algo: HashAlgorithm::default(),
+                        expr: expr.clone(),
+                        salt: self.salt.clone(),
+                    })))
+                } else {
+                    Err(Error::NoMatch)
+                }
+            }
+            _ => Err(Error::NoMatch),
+        }
+    }
+}
+
+impl ExprTransform for ObfuscatePolicy {
+    fn transform_expr(&self, expr: &ExprT, ctx: &Context<ExprMeta>) -> Result<ExprT, Error> {
+        match expr.as_ref() {
+            Expr::Column(Column(context_key)) => {
+                if matches_in(self.fields.iter(), &context_key)? {
+                    let expr = ExprT::from(Expr::Literal(Literal(LiteralValue::Null)));
+                    let alias = context_key.name().to_string();
+                    Ok(ExprT::from(Expr::As(As { expr, alias })))
+                } else {
+                    Err(Error::NoMatch)
+                }
+            }
+            _ => Err(Error::NoMatch),
+        }
+    }
+}
+
+impl ExprTransform for Policy {
+    fn transform_expr(&self, expr: &ExprT, ctx: &Context<ExprMeta>) -> Result<ExprT, Error> {
+        match &self.0 {
+            policy::Policy::Whitelist(whitelist) => whitelist.transform_expr(expr, ctx),
+            policy::Policy::Hash(hash) => hash.transform_expr(expr, ctx),
+            policy::Policy::Obfuscate(obfuscate) => obfuscate.transform_expr(expr, ctx),
             _ => Err(Error::NoMatch),
         }
     }

@@ -107,6 +107,44 @@ macro_rules! copy_ast_enum {
     };
 }
 
+macro_rules! map_variants {
+    ($expr:tt as $root:ident {
+        $(
+            $variant:ident => {
+                $($field:ident: $new_field:block,)*
+            },
+        )*
+        $(
+            #[unnamed] $unnamed_variant:ident => {
+                $($unnamed_field:ident: $new_unnamed_field:block,)*
+            },
+        )*
+        $(
+            _ => $catchall:block,
+        )*
+    }) => {
+        match $expr {
+            $(
+                $root::$variant($variant { $($field,)* }) => {
+                    $root::$variant($variant {
+                        $(
+                            $field: $new_field,
+                        )*
+                    })
+                },
+            )*
+            $(
+                $root::$unnamed_variant($unnamed_variant($($unnamed_field,)*)) => {
+                    $root::$unnamed_variant($unnamed_variant($($new_unnamed_field,)*))
+                },
+            )*
+            $(
+                _ => $catchall,
+            )*
+        }
+    };
+}
+
 /// going from sql string to RelT
 pub mod validate;
 pub use validate::{ValidateExpr, Validator};

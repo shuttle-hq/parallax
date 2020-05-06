@@ -1,8 +1,8 @@
 use crate::common::*;
 
 use super::{
-    rel::{GenericRelTree, RelTree},
-    Context, ContextKey, Rel, RelT, Table, TableMeta, ValidateError, ValidateResult,
+    rel::GenericRelTree, Context, ContextKey, Rel, RelT, Table, TableMeta, ValidateError,
+    ValidateResult,
 };
 use crate::opt::ContextError;
 

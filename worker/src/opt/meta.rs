@@ -2,8 +2,8 @@ use crate::common::{Deserialize, Serialize};
 
 pub use super::*;
 
-pub trait RelTryComplete: Sized {
-    fn try_complete(node: Rel<&Self>) -> ValidateResult<Self>;
+pub trait RelTryComplete<E = ExprT>: Sized {
+    fn try_complete(node: GenericRel<E, &Self>) -> ValidateResult<Self>;
 }
 
 pub trait ExprTryComplete: Sized {

@@ -454,7 +454,43 @@ impl<'a> ValidateExpr for ExprValidator<'a> {}
 pub mod tests {
     use super::*;
 
+    use tokio::runtime::Runtime;
+
     use crate::node::tests::just_get_me_a_context as get_context;
+
+    #[test]
+    fn rebase_relation_tree() {
+        let original_tree = test_validate_for(
+            "SELECT business_id as business_id, COUNT(DISTINCT user_id) \
+             FROM (\
+               SELECT business_id as business_id, user_id as user_id \
+               FROM yelp.review\
+             )\
+             GROUP BY business_id",
+        );
+        let mut new_ctx = get_context();
+        let review_meta = new_ctx
+            .get_mut(&ContextKey::with_name("review").and_prefix("yelp"))
+            .unwrap();
+        let business_id_meta = review_meta
+            .columns
+            .get_mut(&ContextKey::with_name("business_id"))
+            .unwrap();
+        business_id_meta.ty = DataType::Integer;
+        let rebased_tree = Runtime::new()
+            .unwrap()
+            .block_on(original_tree.rebase(&new_ctx));
+        assert_eq!(
+            rebased_tree
+                .board
+                .unwrap()
+                .columns
+                .get(&ContextKey::with_name("business_id"))
+                .unwrap()
+                .ty,
+            DataType::Integer
+        );
+    }
 
     pub fn test_validate_for(query: &str) -> RelT {
         let ctx = get_context();

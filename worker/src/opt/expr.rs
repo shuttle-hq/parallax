@@ -320,12 +320,132 @@ pub struct ExprT<B = ExprMeta> {
     pub(crate) board: ValidateResult<B>,
 }
 
+#[async_trait]
+pub trait RebaseExpr<Meta>: Send + Sync {
+    type NewMeta: ExprTryComplete + Send + Sync;
+    async fn maybe_at(&self, at: &ExprT<Meta>) -> Option<ExprT<Self::NewMeta>>;
+}
+
+#[async_trait]
+impl RebaseExpr<ExprMeta> for Context<ExprMeta> {
+    type NewMeta = ExprMeta;
+    async fn maybe_at(&self, at: &ExprT<ExprMeta>) -> Option<ExprT<Self::NewMeta>> {
+        match &at.root {
+            Expr::Column(Column(context_key)) => Some(ExprT {
+                root: Expr::Column(Column(context_key.clone())),
+                board: self
+                    .get(context_key)
+                    .map(|v| v.clone())
+                    .map_err(|e| e.into_column_error()),
+            }),
+            _ => None,
+        }
+    }
+}
+
 impl<B> ExprT<B> {
     pub fn is_leaf(&self) -> bool {
         match &self.root {
             Expr::Literal(..) | Expr::Column(..) => true,
             _ => false,
         }
+    }
+}
+
+// This stuff is boilerplate and should be in Entish
+impl<C> Expr<C> {
+    pub async fn map_async<'a, F, Fut, CC>(&'a self, f: F) -> Expr<CC>
+    where
+        F: Fn(&'a C) -> Fut,
+        Fut: Future<Output = CC> + Send + 'a,
+    {
+        map_variants!(
+            self as Expr {
+                InList => {
+                    expr: { f(expr).await },
+                    list: { join_all(list.iter().map(|elt| f(elt))).await },
+                    negated: { *negated },
+                },
+                Between => {
+                    expr: { f(expr).await },
+                    negated: { *negated },
+                    low: { f(low).await },
+                    high: { f(high).await },
+                },
+                BinaryOp => {
+                    left: { f(left).await },
+                    op: { op.clone() },
+                    right: { f(right).await },
+                },
+                UnaryOp => {
+                    op: { op.clone() },
+                    expr: { f(expr).await },
+                },
+                Function => {
+                    name: { name.clone() },
+                    args: { join_all(args.iter().map(|elt| f(elt))).await },
+                    distinct: { *distinct },
+                },
+                Case => {
+                    operand: {
+                        if let Some(operand) = operand.as_ref() {
+                            Some(f(operand).await)
+                        } else {
+                            None
+                        }
+                    },
+                    conditions: { join_all(conditions.iter().map(|elt| f(elt))).await },
+                    results: { join_all(results.iter().map(|elt| f(elt))).await },
+                    else_results: {
+                        if let Some(else_results) = else_results.as_ref() {
+                            Some(f(else_results).await)
+                        } else {
+                            None
+                        }
+                    },
+                },
+                As => {
+                    expr: { f(expr).await },
+                    alias: { alias.clone() },
+                },
+                Hash => {
+                    algo: { algo.clone() },
+                    expr: { f(expr).await },
+                    salt: { salt.clone() },
+                },
+                Replace => {
+                    expr: { f(expr).await },
+                    with: { f(with).await },
+                },
+                #[unnamed] Column => { context_key: { context_key.clone() }, },
+                #[unnamed] Literal => { lit: { lit.clone() }, },
+                #[unnamed] IsNull => { from: { f(from).await }, },
+                #[unnamed] IsNotNull => { from: { f(from).await }, },
+            }
+        )
+    }
+}
+
+impl<B> ExprT<B>
+where
+    B: Send + Sync,
+{
+    pub fn rebase<'a, R>(&'a self, r: &'a R) -> impl Future<Output = ExprT<R::NewMeta>> + Send + 'a
+    where
+        R: RebaseExpr<B> + Send + Sync,
+    {
+        async move {
+            if let Some(new_base) = r.maybe_at(self).await {
+                new_base
+            } else {
+                let rebased_root = self
+                    .root
+                    .map_async(async move |child| child.rebase(r).await)
+                    .await;
+                ExprT::from(rebased_root)
+            }
+        }
+        .boxed()
     }
 }
 

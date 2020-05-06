@@ -28,6 +28,7 @@ pub use uuid::Uuid;
 pub use tonic::{metadata::MetadataMap, Request, Response, Status, Streaming};
 
 pub use futures::future::TryFutureExt;
+pub use futures::future::{join_all, FutureExt};
 pub use futures::prelude::{Future, Stream, TryFuture, TryStream};
 pub use futures::stream::TryStreamExt;
 
