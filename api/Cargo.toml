@@ -45,5 +45,5 @@ num-traits = "0.2.11"
 num-derive = "0.3.0"
 
 biscuit = { version = "0.4.2", optional = true }
-ring = { version = "0.16.9", optional = true }
+ring = { version = "0.16.11", optional = true }
 chrono = { version = "0.4.10", optional = true }

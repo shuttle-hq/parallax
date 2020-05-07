@@ -30,9 +30,8 @@ prettytable-rs = "0.8.0"
 
 arrow = "0.16.0"
 
+ring = "0.16.11"
 chrono = { version = "0.4.11", features = ["serde"] }
-
-ring = "*"
 
 anyhow = "*"
 shellexpand = "*"

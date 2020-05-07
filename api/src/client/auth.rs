@@ -279,7 +279,7 @@ pub fn rsa_key_pem_to_der(pem: &str) -> std::io::Result<Vec<u8>> {
 pub fn extract_public_key_pem(pem: &[u8]) -> std::io::Result<String> {
     let child = Command::new("openssl")
         .arg("rsa")
-        .arg("-pubout")
+        .arg("-RSAPublicKey_out")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

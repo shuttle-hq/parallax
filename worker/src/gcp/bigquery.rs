@@ -78,7 +78,8 @@ impl JobBuilder {
             compression: None,
             print_header: Some(true),
             field_delimiter: Some(",".to_string()),
-            destination_uri: None, // Deprecated over destination_uris
+            destination_uri: None, // Deprecated over destination_uris,
+            ..Default::default()
         };
 
         let job_conf = JobConfiguration {
