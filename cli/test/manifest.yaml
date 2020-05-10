@@ -1,0 +1,38 @@
+- backend:
+    big_query:
+      name: "a_bigquery_backend"
+      service_account_key: "../../secret/unit-tester.json"
+      project_id: "openquery-dev"
+      dataset_id: "yelp"
+      staging_project_id: "openquery-dev"
+      staging_dataset_id: "cache"
+
+- dataset:
+    name: "yelp"
+    data:
+    - resource.backend.big_query.a_bigquery_backend.data["review"]
+    - resource.backend.big_query.a_bigquery_backend.data["business"]
+    entities: []
+    policy_bindings:
+    - name: "group1_policies"
+      groups:
+      - resource.group.wheel
+      policies:
+      - policy.whitelist.business_id_is_whitelisted
+      - policy.obfuscate.review_id_is_obfuscated
+      - policy.hash.user_id_is_hashed
+      priority: 10
+    policies:
+    - whitelist:
+        name: "business_id_is_whitelisted"
+        fields:
+        - "business_id"
+    - obfuscate:
+        name: "review_id_is_obfuscated"
+        fields:
+        - "review_id"
+    - hash:
+        name: "user_id_is_hashed"
+        salt: []
+        fields:
+        - "user_id"
