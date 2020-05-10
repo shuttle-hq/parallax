@@ -42,39 +42,39 @@ macro_rules! to_ansatz {
     }
 }
 
-macro_rules! auto_try_complete {
+macro_rules! auto_repr {
     (
-        $tr:ident,
-        $node:ident,
+        $tr:path,
+        $node:path,
         {
             #[derive($($attr:path,)*)]
-            pub struct $id:ident {
-                $($n:ident: $f:path,)*
+            $vis:vis struct $id:ident {
+                $($field_vis:vis $n:ident: $f:path,)*
             }
         }
     ) => {
         #[derive($($attr,)*)]
-        pub struct $id {
-            $(pub(crate) $n: $f,)*
+        $vis struct $id {
+            $($field_vis $n: $f,)*
         }
 
         impl $tr for $id {
-            fn try_complete(node: $node<&Self>) -> ValidateResult<Self> {
-                Ok(Self { $($n: <$f as $tr>::try_complete(node.map(&mut |n| &n.$n))?,)* })
+            fn dot(node: $node) -> ValidateResult<Self> {
+                Ok(Self { $($n: <$f as $tr>::dot(node.map(&mut |n| &n.$n))?,)* })
             }
         }
     }
 }
 
-macro_rules! derive_try_complete_expr {
+macro_rules! derive_expr_repr {
     ($($it:tt)*) => {
-        auto_try_complete! { ExprTryComplete, Expr, { $($it)* } }
+        auto_repr! { ExprRepr, Expr<&Self>, { $($it)* } }
     }
 }
 
-macro_rules! derive_try_complete_rel {
-    ($($it:tt)*) => {
-        auto_try_complete! { RelTryComplete, Rel, { $($it)* } }
+macro_rules! derive_rel_repr {
+    (over $expr:ident derive $($it:tt)*) => {
+        auto_repr! { RelRepr<$expr>, GenericRel<&$expr, &Self>, { $($it)* } }
     }
 }
 
@@ -145,6 +145,15 @@ macro_rules! map_variants {
     };
 }
 
+macro_rules! rebase_closure {
+    ($tree:expr => $from:ident -> $to:ident $closure:block) => {
+        async move {
+            let rebase_closure = crate::opt::RebaseClosure::<$from, _, _, $to>::new($closure);
+            rebase_closure.rebase(&$tree).await
+        }
+    };
+}
+
 /// going from sql string to RelT
 pub mod validate;
 pub use validate::{ValidateExpr, Validator};
@@ -154,9 +163,7 @@ pub mod error;
 pub use error::{ValidateError, ValidateResult};
 
 pub mod meta;
-pub use crate::opt::meta::{
-    AudienceBoard, DataType, Domain, ExprTryComplete, Mode, RelTryComplete,
-};
+pub use crate::opt::meta::{AudienceBoard, DataType, Domain, ExprRepr, Mode, Named, RelRepr};
 
 pub mod ansatz;
 pub use ansatz::{CompositionError, ExprAnsatz, RelAnsatz, ToAnsatz};
@@ -172,9 +179,12 @@ pub use rel::*;
 pub mod expr;
 pub use expr::*;
 
+pub mod privacy;
+pub use privacy::*;
+
 /// A key for something in a given context. This is basically a wrapper around
 /// `str::split(".")`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
 pub struct ContextKey(Vec<String>);
 
 impl ContextKey {
@@ -302,6 +312,12 @@ pub struct Context<M> {
     ctx: Vec<(ContextKey, M)>,
 }
 
+#[async_trait]
+pub trait Contextish {
+    type M;
+    async fn get(&self, key: &ContextKey) -> Result<&Self::M, ContextError>;
+}
+
 impl<M> Default for Context<M> {
     fn default() -> Self {
         Self { ctx: Vec::new() }
@@ -377,14 +393,14 @@ pub enum ContextError {
 }
 
 impl ContextError {
-    fn into_column_error(self) -> ValidateError {
+    pub fn into_column_error(self) -> ValidateError {
         match self {
             ContextError::NotFound(key) => ValidateError::ColumnNotFound(key.to_string()),
             ContextError::Ambiguous(key) => ValidateError::AmbiguousColumnName(key.to_string()),
         }
     }
 
-    fn into_table_error(self) -> ValidateError {
+    pub fn into_table_error(self) -> ValidateError {
         match self {
             ContextError::NotFound(key) => ValidateError::TableNotFound(key),
             ContextError::Ambiguous(key) => ValidateError::AmbiguousTableName(key),

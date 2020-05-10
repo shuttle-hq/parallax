@@ -1,6 +1,11 @@
+use super::{Backend, Probe};
+use crate::common::*;
+
 use yup_oauth2::GetToken;
 
-use google_bigquery2::{TableListTables, TableReference};
+use google_bigquery2::{
+    GetQueryResultsResponse, Job as BigQueryJob, TableListTables, TableReference,
+};
 
 use bigquery_storage::client::{Client as BigQueryStorageClient, Error as ClientError};
 use bigquery_storage::proto::bigquery_storage::read_rows_response::Rows;
@@ -9,8 +14,6 @@ use bigquery_storage::proto::bigquery_storage::{ReadRowsRequest, ReadRowsRespons
 
 use derive_more::From;
 
-use super::Backend;
-use crate::common::*;
 use crate::gcp::errors::GcpError;
 use crate::gcp::{
     bigquery::{BigQuery as BigQueryClient, JobBuilder, TableRef},
@@ -23,6 +26,9 @@ use crate::opt::{
     plan::Step, rel::*, Context, ContextError, ContextKey, DataType, Domain, ExprMeta, Mode,
     RelAnsatz, ToAnsatz, ValidateError, ValidateResult,
 };
+
+mod probe;
+use probe::BigQueryProbe;
 
 pub struct ExprExtraMeta {
     min: String,
@@ -100,12 +106,27 @@ impl BigQuery<()> {
 
 impl<O> BigQuery<O>
 where
-    O: GetToken + Send + Sync,
+    O: GetToken + Send + Sync + 'static,
 {
-    fn to_inner(&self) -> &BigQueryClient<O> {
+    pub(self) fn to_inner(&self) -> &BigQueryClient<O> {
         &self.big_query
     }
 
+    fn in_context(&self, key: &ContextKey) -> Result<TableRef> {
+        let res = TableRef::new(
+            &self.dataset.project_id,
+            &self.dataset.dataset_id,
+            key.name(),
+        );
+        res.map_err(|e| e.into())
+    }
+
+    fn in_staging(&self, key: &ContextKey) -> Result<TableRef> {
+        let res = TableRef::new(&self.cache.project_id, &self.cache.dataset_id, key.name());
+        res.map_err(|e| e.into())
+    }
+
+    #[deprecated(note = "what on earth still uses this?")]
     pub async fn get_context_from_backend(
         &self,
         project_id: &str,
@@ -133,168 +154,38 @@ where
                 _ => return Err(Error::new("expected a table_id")),
             };
 
-            let context_key = ContextKey::with_name(&table_id);
-            let table_meta = self
-                .get_table_from_backend(project_id, dataset_id, &table_id)
-                .await?;
+            let context_key = ContextKey::with_name(&table_id)
+                .and_prefix(dataset_id)
+                .and_prefix(project_id);
+            let table_meta = self.probe(&context_key).await?.to_meta().await?;
             ctx.insert(context_key, table_meta);
         }
 
         Ok(ctx)
     }
 
-    async fn get_table_from_backend(
-        &self,
-        project_id: &str,
-        dataset_id: &str,
-        table_id: &str,
-    ) -> Result<TableMeta> {
-        let table = self
-            .to_inner()
-            .get_table(project_id, dataset_id, table_id)
-            .await?;
-
-        let schema = table
-            .schema
-            .and_then(|s| s.fields)
-            .ok_or(Error::new("expected a schema"))?;
-
-        let mut columns = Context::new();
-
-        for field in schema.into_iter() {
-            let name = field.name.ok_or(Error::new("expected a field name"))?;
-            let context_key = ContextKey::with_name(&name);
-
-            let ty = field
-                .type_
-                .ok_or(Error::new("expected a field type"))
-                .and_then(|type_| match type_.as_str() {
-                    "STRING" => Ok(DataType::String),
-                    "BYTES" => Ok(DataType::Bytes),
-                    "INTEGER" | "INT64" => Ok(DataType::Integer),
-                    "FLOAT" | "FLOAT64" => Ok(DataType::Float),
-                    "BOOLEAN" | "BOOL" => Ok(DataType::Boolean),
-                    "DATETIME" | "TIMESTAMP" => Ok(DataType::Timestamp),
-                    "DATE" => Ok(DataType::Date),
-                    type_str => {
-                        let err_msg = format!("BigQuery type '{}'", type_str);
-                        let err = Error::new_detailed(
-                            "BigQuery data type not supported",
-                            NotSupportedError { feature: err_msg },
-                        );
-                        Err(err)
-                    }
-                })?;
-
-            let mode = field
-                .mode
-                .map(|mode| match mode.as_str() {
-                    "NULLABLE" => Ok(Mode::Nullable),
-                    "REQUIRED" => Ok(Mode::Required),
-                    mode_str => {
-                        let err_msg = format!("BigQuery mode '{}'", mode_str);
-                        let err = Error::new_detailed(
-                            "BigQuery table mode",
-                            NotSupportedError { feature: err_msg },
-                        );
-                        Err(err)
-                    }
-                })
-                .transpose()?
-                .unwrap_or(Mode::Nullable);
-
-            let domain = if ty.is_numeric() {
-                let ExprExtraMeta { min, max } = self
-                    .get_extra_meta(project_id, dataset_id, table_id, &name)
-                    .await?;
-
-                try {
-                    match ty {
-                        DataType::Integer => {
-                            let min = min.parse()?;
-                            let max = max.parse()?;
-                            Domain::Discrete { min, max, step: 1 }
-                        }
-                        DataType::Float => {
-                            let min = min.parse()?;
-                            let max = max.parse()?;
-                            Domain::Continuous { min, max }
-                        }
-                        _ => unreachable!(),
-                    }
-                }
-            } else {
-                Ok(Domain::Categorical)
-            };
-
-            let domain = domain.map_err(|_: Box<dyn std::error::Error>| {
-                Error::new("invalid response from backend")
-            })?;
-
-            let expr_meta = ExprMeta {
-                ty,
-                mode,
-                domain,
-                ..Default::default()
-            };
-
-            columns.insert(context_key, expr_meta);
-        }
-
-        let mut table_meta = TableMeta::from(columns).unwrap();
-        let context_key = ContextKey::with_name(table_id)
-            .and_prefix(dataset_id)
-            .and_prefix(project_id);
-        table_meta.source = Some(context_key);
-        Ok(table_meta)
+    async fn run_query(&self, query_str: &str) -> Result<BigQueryJob> {
+        self.to_inner()
+            .run_query(&self.cache.project_id, &self.cache.dataset_id, query_str)
+            .await
+            .map_err(|e| e.into())
     }
 
-    async fn get_extra_meta(
-        &self,
-        project_id: &str,
-        dataset_id: &str,
-        table_id: &str,
-        column_name: &str,
-    ) -> Result<ExprExtraMeta> {
+    async fn run_query_and_get_results(&self, query_str: &str) -> Result<GetQueryResultsResponse> {
+        self.to_inner()
+            .run_query_and_get_results(&self.cache.project_id, &self.cache.dataset_id, query_str)
+            .await
+            .map_err(|e| e.into())
+    }
+
+    pub(self) fn job_builder(&self) -> JobBuilder {
         let mut builder = JobBuilder::default();
-        builder.project_id(&self.cache.project_id).query(
-            &format!(
-                "SELECT MAX({}), MIN({}) FROM {}.{}.{}",
-                column_name, column_name, project_id, dataset_id, table_id
-            ),
-            TableRef {
-                project_id: self.cache.project_id.clone(),
-                dataset_id: self.cache.dataset_id.clone(),
-                table_id: uuid::Uuid::new_v4().to_simple().to_string(),
-            },
-        );
-        let job_request = builder.build()?;
-
-        let job = self.to_inner().run_to_completion(job_request).await?;
-
-        let job_id = job
-            .job_reference
-            .and_then(|jr| jr.job_id)
-            .ok_or(Error::new("invalid response from backend"))?;
-
-        let results = self
-            .to_inner()
-            .get_query_results(&self.cache.project_id, &job_id)
-            .await?;
-
-        results
-            .rows
-            .and_then(|mut rows| {
-                let mut cells = rows.pop()?.f?;
-                let min = cells.pop()?.v?;
-                let max = cells.pop()?.v?;
-                Some(ExprExtraMeta { min, max })
-            })
-            .ok_or(Error::new("invalid response from backend"))
+        builder.project_id(&self.cache.project_id);
+        builder
     }
 }
 
-#[tonic::async_trait]
+#[async_trait]
 impl<O> Backend for BigQuery<O>
 where
     O: GetToken + Send + Sync + 'static,
@@ -305,59 +196,38 @@ where
             .ctx
             .into_iter()
             .map(|(ck, meta)| {
-                let DatasetId {
-                    project_id,
-                    dataset_id,
-                } = self.dataset.clone();
-                let table_id = meta
+                let in_source = meta
                     .source
-                    .ok_or(Error::new("a table had no associated context_key"))?
-                    .name()
-                    .to_string();
-                let table = BigQueryTable {
-                    project_id,
-                    dataset_id,
-                    table_id,
-                };
-                Ok((ck, table))
+                    .ok_or(Error::new("a table had no associated context_key"))?;
+                let table_ref = self.in_context(&in_source)?;
+                Ok((ck, table_ref))
             })
             .collect::<Result<_>>()?;
+
         let rel_t = BigQueryRelT::wrap(step.rel_t, &ctx);
         let query: sqlparser::ast::Query = rel_t.to_ansatz()?.into();
         let query_str = query.to_string();
 
-        let output = TableRef {
-            project_id: self.cache.project_id.clone(),
-            dataset_id: self.cache.dataset_id.clone(),
-            table_id: step.promise.name().to_string(),
-        };
+        let output = self.in_staging(&step.promise)?;
 
         let mut builder = JobBuilder::default();
         builder
             .project_id(&self.cache.project_id.clone())
             .query(&query_str, output);
         let job_request = builder.build()?;
-        let job = self.big_query.run_to_completion(job_request).await?;
+        self.big_query.run_to_completion(job_request).await?;
+
         Ok(())
     }
 
-    async fn get_meta(&self, ty: &ContextKey) -> Result<TableMeta> {
-        let DatasetId {
-            project_id,
-            dataset_id,
-        } = &self.dataset;
-        let meta = self
-            .get_table_from_backend(project_id, dataset_id, ty.name())
-            .await?;
-        Ok(meta)
+    async fn probe<'a>(&'a self, key: &ContextKey) -> Result<Box<dyn Probe + 'a>> {
+        let table_ref = self.in_context(key)?;
+        let probe = BigQueryProbe::new(self, table_ref).await?;
+        Ok(Box::new(probe))
     }
 
     async fn get_schema(&self, ctx_key: &ContextKey) -> Result<ArrowSchema> {
-        let table_ref = TableRef {
-            project_id: self.cache.project_id.clone(),
-            dataset_id: self.cache.dataset_id.clone(),
-            table_id: ctx_key.name().to_string(),
-        };
+        let table_ref = self.in_staging(ctx_key)?;
         self.storage
             .get_schema(&table_ref)
             .await
@@ -365,11 +235,7 @@ where
     }
 
     async fn get_records(&self, ctx_key: &ContextKey) -> Result<ContentStream<ArrowRecordBatch>> {
-        let table_ref = TableRef {
-            project_id: self.cache.project_id.clone(),
-            dataset_id: self.cache.dataset_id.clone(),
-            table_id: ctx_key.name().to_string(),
-        };
+        let table_ref = self.in_staging(ctx_key)?;
         self.storage
             .stream_rows(&table_ref)
             .await
@@ -395,27 +261,20 @@ impl From<ContextError> for Error {
     }
 }
 
-pub struct BigQueryTable {
-    project_id: String,
-    dataset_id: String,
-    table_id: String,
-}
-
-impl BigQueryTable {
-    fn to_context_key(&self) -> ContextKey {
-        ContextKey::with_name(&self.table_id)
-            .and_prefix(&self.dataset_id)
-            .and_prefix(&self.project_id)
-    }
+fn table_ref_to_context_key(table_ref: &TableRef) -> ContextKey {
+    let (project_id, dataset_id, table_id) = table_ref.unwrap();
+    ContextKey::with_name(table_id)
+        .and_prefix(dataset_id)
+        .and_prefix(project_id)
 }
 
 pub struct BigQueryRelT<'a> {
     root: RelT,
-    ctx: &'a Context<BigQueryTable>,
+    ctx: &'a Context<TableRef>,
 }
 
 impl<'a> BigQueryRelT<'a> {
-    fn wrap(root: RelT, ctx: &'a Context<BigQueryTable>) -> Self {
+    fn wrap(root: RelT, ctx: &'a Context<TableRef>) -> Self {
         Self { ctx, root }
     }
 
@@ -425,7 +284,10 @@ impl<'a> BigQueryRelT<'a> {
             match t {
                 Rel::Table(Table(key)) => {
                     ctx.get(&key)
-                        .map(|loc| Rel::Table(Table(loc.to_context_key())))
+                        .map(|loc| {
+                            let as_ctx_key = table_ref_to_context_key(loc);
+                            Rel::Table(Table(as_ctx_key))
+                        })
                         .map(|t| t.to_ansatz().unwrap()) // FIXMEs
                 }
                 _ => Ok(t.to_ansatz().unwrap()),
@@ -466,11 +328,8 @@ where
         &self,
         table_ref: &TableRef,
     ) -> std::result::Result<ArrowSchema, BigQueryStorageError> {
-        let TableRef {
-            project_id,
-            dataset_id,
-            table_id,
-        } = table_ref;
+        let (project_id, dataset_id, table_id) = table_ref.unwrap();
+
         let read_session = self
             .0
             .create_read_session(project_id, dataset_id, table_id)
@@ -494,11 +353,7 @@ where
         &self,
         table_ref: &TableRef,
     ) -> std::result::Result<ContentStream<ArrowRecordBatch>, BigQueryStorageError> {
-        let TableRef {
-            project_id,
-            dataset_id,
-            table_id,
-        } = table_ref;
+        let (project_id, dataset_id, table_id) = table_ref.unwrap();
         let read_session = self
             .0
             .create_read_session(project_id, dataset_id, table_id)
@@ -557,12 +412,13 @@ pub mod tests {
     pub fn mk_context() -> Context<TableMeta> {
         let big_query = mk_big_query();
         let mut rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
+        let out = rt.block_on(async {
             big_query
                 .get_context_from_backend(PROJECT_ID, TEST_DATASET_ID)
                 .await
                 .unwrap()
-        })
+        });
+        out
     }
 
     pub fn mk_big_query() -> BigQuery<impl GetToken> {
@@ -590,15 +446,10 @@ pub mod tests {
     fn bigquery_meta_with_domain() {
         let client = mk_big_query();
         Runtime::new().unwrap().block_on(async {
-            let table_meta = client
-                .get_table_from_backend("openquery-dev", "yelp", "business")
-                .await
-                .unwrap();
-            let domain = table_meta
-                .columns
-                .get(&ContextKey::with_name("review_count"))
-                .unwrap()
-                .domain;
+            let test_table = ContextKey::with_name("business").and_prefix("yelp");
+            let probe = client.probe(&test_table).await.unwrap();
+            let test_key = ContextKey::with_name("review_count");
+            let domain = probe.domain(&test_key).await.unwrap();
             assert_eq!(
                 domain,
                 Domain::Discrete {

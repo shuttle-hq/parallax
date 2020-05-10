@@ -34,14 +34,46 @@ pub struct JobRequest {
 
 #[derive(Debug, Clone)]
 pub struct TableRef {
-    pub project_id: String,
-    pub dataset_id: String,
-    pub table_id: String,
+    project_id: String,
+    dataset_id: String,
+    table_id: String,
 }
 
-impl ToString for TableRef {
-    fn to_string(&self) -> String {
-        format!(
+impl TableRef {
+    pub fn new(project_id: &str, dataset_id: &str, table_id: &str) -> Result<Self> {
+        if Self::is_valid(dataset_id)
+            && Self::is_valid(table_id)
+            && Self::is_valid_project(project_id)
+        {
+            Ok(Self {
+                project_id: project_id.to_string(),
+                dataset_id: dataset_id.to_string(),
+                table_id: table_id.to_string(),
+            })
+        } else {
+            let err_msg = format!(
+                "{}:{}.{} is not a valid BigQuery table name",
+                project_id, dataset_id, table_id
+            );
+            Err(GcpError::ApiError(err_msg))
+        }
+    }
+    pub fn unwrap(&self) -> (&str, &str, &str) {
+        (&self.project_id, &self.dataset_id, &self.table_id)
+    }
+    fn is_valid(s: &str) -> bool {
+        s.chars().all(|c| c.is_alphanumeric() || c == '_')
+    }
+    fn is_valid_project(s: &str) -> bool {
+        s.chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+    }
+}
+
+impl std::fmt::Display for TableRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
             "`{}`.`{}`.`{}`",
             self.project_id, self.dataset_id, self.table_id
         )
@@ -195,12 +227,8 @@ where
             .api_request::<(), _>(Method::GET, uri.parse()?, None)
             .await
     }
-    pub async fn get_table(
-        &self,
-        project_id: &str,
-        dataset_id: &str,
-        table_id: &str,
-    ) -> Result<Table> {
+    pub async fn get_table(&self, table_ref: &TableRef) -> Result<Table> {
+        let (project_id, dataset_id, table_id) = table_ref.unwrap();
         let uri = format!(
             "https://bigquery.googleapis.com/bigquery/v2\
              /projects/{}\
@@ -216,6 +244,48 @@ where
         self.gcp
             .api_request(req.method.clone(), req.uri.parse()?, req.job)
             .await
+    }
+    pub async fn run_query(
+        &self,
+        staging_project_id: &str,
+        staging_dataset_id: &str,
+        query_str: &str,
+    ) -> Result<BigQueryJob> {
+        let rand_table_ref = TableRef::new(
+            staging_project_id,
+            staging_dataset_id,
+            &uuid::Uuid::new_v4().to_simple().to_string(),
+        )?;
+
+        let mut builder = JobBuilder::default();
+        builder
+            .project_id(staging_project_id)
+            .query(query_str, rand_table_ref);
+
+        let job_request = builder.build()?;
+
+        self.run_to_completion(job_request).await
+    }
+    pub async fn run_query_and_get_results(
+        &self,
+        staging_project_id: &str,
+        staging_dataset_id: &str,
+        query_str: &str,
+    ) -> Result<GetQueryResultsResponse> {
+        let job = self
+            .run_query(staging_project_id, staging_dataset_id, query_str)
+            .await?;
+
+        let job_id = job
+            .job_reference
+            .and_then(|jr| jr.job_id)
+            .ok_or(GcpError::ApiError(
+                "invalid response from backend".to_string(),
+            ))?;
+
+        let results = self.get_query_results(staging_project_id, &job_id).await?;
+
+        Ok(results)
     }
     pub async fn get_query_results(
         &self,

@@ -211,7 +211,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
 
-    #[test]
     pub fn setup_test() {
         env_logger::builder().is_test(true).init();
     }

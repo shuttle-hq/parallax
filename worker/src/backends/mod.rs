@@ -1,22 +1,63 @@
 use crate::common::*;
 use crate::node::SharedState;
-use crate::opt::{plan::Step, Context, ContextKey, TableMeta};
+use crate::opt::{
+    plan::Step, Context, ContextKey, ExprMeta, MaximumFrequency, RowCount, TableMeta,
+};
 use crate::Result;
 
-#[cfg(feature = "google-bigquery")]
-pub mod big_query;
+use crate::opt::Domain;
 
 #[cfg(feature = "google-bigquery")]
-pub use big_query::BigQuery;
+pub mod bigquery;
+
+#[cfg(feature = "google-bigquery")]
+pub use bigquery::BigQuery;
+
+#[tonic::async_trait]
+pub trait Probe: Send + Sync {
+    async fn expr(&self, key: &ContextKey) -> Result<ExprMeta>;
+    async fn to_meta(&self) -> Result<TableMeta>;
+    async fn domain(&self, key: &ContextKey) -> Result<Domain>;
+    async fn maximum_frequency(&self, key: &ContextKey) -> Result<MaximumFrequency>;
+    async fn row_count(&self) -> Result<RowCount>;
+}
+
+pub struct LazyProbe<B: ?Sized> {
+    inner: Arc<B>,
+    key: ContextKey,
+}
+
+#[async_trait]
+impl<B> Probe for LazyProbe<B>
+where
+    B: Backend + ?Sized,
+{
+    async fn expr(&self, key: &ContextKey) -> Result<ExprMeta> {
+        self.inner.probe(&self.key).await?.expr(key).await
+    }
+    async fn to_meta(&self) -> Result<TableMeta> {
+        self.inner.probe(&self.key).await?.to_meta().await
+    }
+    async fn domain(&self, key: &ContextKey) -> Result<Domain> {
+        self.inner.probe(&self.key).await?.domain(key).await
+    }
+    async fn maximum_frequency(&self, key: &ContextKey) -> Result<MaximumFrequency> {
+        self.inner
+            .probe(&self.key)
+            .await?
+            .maximum_frequency(key)
+            .await
+    }
+    async fn row_count(&self) -> Result<RowCount> {
+        self.inner.probe(&self.key).await?.row_count().await
+    }
+}
 
 #[tonic::async_trait]
 pub trait Backend: Send + Sync {
-    /// Compute the plan. Requirement: `stage.output()` is owned by self
-    /// It is guaranteed that self.migrate(..) will have been called for each `data_id`
-    /// in `stage.closure()`
     async fn compute(&self, stage: Step) -> Result<()>;
 
-    async fn get_meta(&self, ty: &ContextKey) -> Result<TableMeta>;
+    async fn probe<'a>(&'a self, key: &ContextKey) -> Result<Box<dyn Probe + 'a>>;
 
     /// Retrieve the Results from the remote backend
     async fn get_records(&self, data_id: &ContextKey) -> Result<ContentStream<ArrowRecordBatch>>;
@@ -70,8 +111,12 @@ where
     async fn compute(&self, step: Step) -> Result<()> {
         self.to_inner()?.compute(step).await
     }
-    async fn get_meta(&self, ty: &ContextKey) -> Result<TableMeta> {
-        self.to_inner()?.get_meta(ty).await
+    async fn probe<'a>(&'a self, key: &ContextKey) -> Result<Box<dyn Probe + 'a>> {
+        let lazy_probe = LazyProbe {
+            inner: self.to_inner()?,
+            key: (*key).clone(),
+        };
+        Ok(Box::new(lazy_probe))
     }
     async fn get_records(&self, ctx_key: &ContextKey) -> Result<ContentStream<ArrowRecordBatch>> {
         self.to_inner()?.get_records(ctx_key).await
@@ -115,9 +160,13 @@ pub mod tests {
     fn test_backend<B: Backend>(backend: B, ctx: Context<TableMeta>) {
         let ctx = ctx
             .into_iter()
-            .map(|(key, t)| (key.and_prefix("test_backend"), t))
+            .map(|(key, table)| {
+                (
+                    ContextKey::with_name(key.name()).and_prefix("test_backend"),
+                    table,
+                )
+            })
             .collect();
-
         let mut runtime = Runtime::new().unwrap();
         runtime.block_on(async move {
             let validator = Validator::new(&ctx);
@@ -133,8 +182,8 @@ pub mod tests {
     #[test]
     fn big_query() {
         test_backend(
-            big_query::tests::mk_big_query(),
-            big_query::tests::mk_context(),
+            bigquery::tests::mk_big_query(),
+            bigquery::tests::mk_context(),
         )
     }
 }

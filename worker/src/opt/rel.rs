@@ -1,10 +1,11 @@
+use futures::future::ready;
 use sqlparser::ast;
 
 use crate::common::*;
 
 use super::{
-    expr::*, CompositionError, Context, ContextKey, ExprAnsatz, ExprTryComplete, RebaseExpr,
-    RelAnsatz, RelTryComplete, ToAnsatz, ToContext, TryToContext, ValidateError, ValidateResult,
+    expr::*, CompositionError, Context, ContextKey, ExprAnsatz, ExprRepr, RebaseExpr, RelAnsatz,
+    RelRepr, ToAnsatz, ToContext, TryToContext, ValidateError, ValidateResult,
 };
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -26,12 +27,23 @@ impl<E> JoinConstraint<E> {
             JoinConstraint::Natural => JoinConstraint::Natural,
         }
     }
-    pub fn map_expressions<O, F: Fn(&E) -> O>(&self, f: F) -> JoinConstraint<O> {
+    pub fn map_expressions<'a, O: 'a, F: Fn(&'a E) -> O>(&'a self, f: &F) -> JoinConstraint<O> {
         match self {
             JoinConstraint::On(e) => JoinConstraint::On(f(e)),
             JoinConstraint::Using(what) => JoinConstraint::Using(what.clone()),
             JoinConstraint::Natural => JoinConstraint::Natural,
         }
+    }
+}
+
+impl<V, E> JoinConstraint<std::result::Result<V, E>> {
+    pub fn into_result_expressions(self) -> std::result::Result<JoinConstraint<V>, E> {
+        let res = match self {
+            JoinConstraint::On(e) => JoinConstraint::On(e?),
+            JoinConstraint::Using(what) => JoinConstraint::Using(what),
+            JoinConstraint::Natural => JoinConstraint::Natural,
+        };
+        Ok(res)
     }
 }
 
@@ -79,6 +91,25 @@ where
     }
 }
 
+impl<V, E> JoinOperator<std::result::Result<V, E>> {
+    pub fn into_result_expressions(self) -> std::result::Result<JoinOperator<V>, E> {
+        let res = match self {
+            JoinOperator::Inner(inner) => JoinOperator::Inner(inner.into_result_expressions()?),
+            JoinOperator::LeftOuter(inner) => {
+                JoinOperator::LeftOuter(inner.into_result_expressions()?)
+            }
+            JoinOperator::RightOuter(inner) => {
+                JoinOperator::RightOuter(inner.into_result_expressions()?)
+            }
+            JoinOperator::FullOuter(inner) => {
+                JoinOperator::FullOuter(inner.into_result_expressions()?)
+            }
+            JoinOperator::CrossJoin => JoinOperator::CrossJoin,
+        };
+        Ok(res)
+    }
+}
+
 impl<E> JoinOperator<E> {
     pub async fn map_expressions_async<'a, O, F, Fut>(&'a self, f: F) -> JoinOperator<O>
     where
@@ -99,7 +130,7 @@ impl<E> JoinOperator<E> {
             JoinOperator::CrossJoin => JoinOperator::CrossJoin,
         }
     }
-    fn map_expressions<O, F: Fn(&E) -> O>(&self, f: F) -> JoinOperator<O> {
+    pub fn map_expressions<'a, O: 'a, F: Fn(&'a E) -> O>(&'a self, f: &F) -> JoinOperator<O> {
         match self {
             JoinOperator::Inner(inner) => JoinOperator::Inner(inner.map_expressions(f)),
             JoinOperator::LeftOuter(inner) => JoinOperator::LeftOuter(inner.map_expressions(f)),
@@ -126,7 +157,7 @@ copy_ast_enum!(
 );
 
 entish! {
-    #[derive(Map, MapOwned, From, TryInto, IntoResult)]
+    #[derive(Map, MapOwned, From, TryInto, IntoResult, IntoOption)]
     #[derive(Serialize, Deserialize, Debug, Clone)]
     #[entish(variants_as_structs)]
     pub enum GenericRel<Expr> {
@@ -283,8 +314,8 @@ pub struct RelT<B = TableMeta, E = ExprT> {
 // This stuff is boilerplate and should be in Entish
 impl<E, C> GenericRel<E, C>
 where
-    E: Clone,
-    C: Clone,
+    E: Send + Sync + Clone,
+    C: Send + Sync + Clone,
 {
     pub async fn map_async<'a, F, Fut, CC>(&'a self, f: F) -> GenericRel<E, CC>
     where
@@ -342,63 +373,69 @@ where
             }
         )
     }
-    pub async fn map_expressions_async<'a, F, Fut, EE>(&'a self, f: &'a F) -> GenericRel<EE, C>
+    pub fn map_expressions_async<'a, F, Fut, EE>(
+        &'a self,
+        f: F,
+    ) -> impl Future<Output = GenericRel<EE, C>> + Send + 'a
     where
-        F: Fn(&'a E) -> Fut,
+        EE: Send + Sync,
+        F: Fn(&'a E) -> Fut + Send + Sync + 'a,
         Fut: Future<Output = EE> + Send + 'a,
     {
-        map_variants!(
-            self as GenericRel {
-                Aggregation => {
-                    attributes: { join_all(attributes.iter().map(|elt| f(elt))).await },
-                    group_by: { join_all(group_by.iter().map(|elt| f(elt))).await },
-                    from: { from.clone() },
-                },
-                Projection => {
-                    attributes: { join_all(attributes.iter().map(|elt| f(elt))).await },
-                    from: { from.clone() },
-                },
-                Selection => {
-                    from: { from.clone() },
-                    where_: { f(where_).await },
-                },
-                Offset => {
-                    offset: { f(offset).await },
-                    from: { from.clone() },
-                },
-                Limit => {
-                    number_rows: { f(number_rows).await },
-                    from: { from.clone() },
-                },
-                OrderBy => {
-                    order: { order.clone() },
-                    by: { join_all(by.iter().map(|elt| f(elt))).await },
-                    from: { from.clone() },
-                },
-                Join => {
-                    left: { left.clone() },
-                    right: { right.clone() },
-                    operator: { operator.map_expressions_async(f).await },
-                },
-                Set => {
-                    operator: { operator.clone() },
-                    left: { left.clone() },
-                    right: { right.clone() },
-                },
-                Distinct => {
-                    from: { from.clone() },
-                },
-                WithAlias => {
-                    from: { from.clone() },
-                    alias: { alias.clone() },
-                },
-                #[unnamed] Table => {
-                    context_key: { context_key.clone() },
-                },
-            }
-        )
+        async move {
+            map_variants!(
+                self as GenericRel {
+                    Aggregation => {
+                        attributes: { join_all(attributes.iter().map(|elt| f(elt))).await },
+                        group_by: { join_all(group_by.iter().map(|elt| f(elt))).await },
+                        from: { from.clone() },
+                    },
+                    Projection => {
+                        attributes: { join_all(attributes.iter().map(|elt| f(elt))).await },
+                        from: { from.clone() },
+                    },
+                    Selection => {
+                        from: { from.clone() },
+                        where_: { f(where_).await },
+                    },
+                    Offset => {
+                        offset: { f(offset).await },
+                        from: { from.clone() },
+                    },
+                    Limit => {
+                        number_rows: { f(number_rows).await },
+                        from: { from.clone() },
+                    },
+                    OrderBy => {
+                        order: { order.clone() },
+                        by: { join_all(by.iter().map(|elt| f(elt))).await },
+                        from: { from.clone() },
+                    },
+                    Join => {
+                        left: { left.clone() },
+                        right: { right.clone() },
+                        operator: { operator.map_expressions_async(f).await },
+                    },
+                    Set => {
+                        operator: { operator.clone() },
+                        left: { left.clone() },
+                        right: { right.clone() },
+                    },
+                    Distinct => {
+                        from: { from.clone() },
+                    },
+                    WithAlias => {
+                        from: { from.clone() },
+                        alias: { alias.clone() },
+                    },
+                    #[unnamed] Table => {
+                        context_key: { context_key.clone() },
+                    },
+                }
+            )
+        }
     }
-    pub fn map_expressions<O, F: Fn(&E) -> O>(&self, f: &F) -> GenericRel<O, C> {
+    pub fn map_expressions<'a, O: 'a, F: Fn(&'a E) -> O>(&'a self, f: &F) -> GenericRel<O, C> {
         map_variants!(
             self as GenericRel {
                 Aggregation => {
@@ -452,6 +489,62 @@ where
     }
 }
 
+impl<V, E, T> GenericRel<std::result::Result<V, E>, T> {
+    pub fn into_result_expressions(self) -> std::result::Result<GenericRel<V, T>, E> {
+        let res = map_variants!(
+            self as GenericRel {
+                Aggregation => {
+                    attributes: { attributes.into_iter().collect::<Result<Vec<_>, E>>()? },
+                    group_by: { group_by.into_iter().collect::<Result<Vec<_>, E>>()? },
+                    from: { from },
+                },
+                Projection => {
+                    attributes: { attributes.into_iter().collect::<Result<Vec<_>, E>>()? },
+                    from: { from },
+                },
+                Selection => {
+                    from: { from },
+                    where_: { where_? },
+                },
+                Offset => {
+                    offset: { offset? },
+                    from: { from },
+                },
+                Limit => {
+                    number_rows: { number_rows? },
+                    from: { from },
+                },
+                OrderBy => {
+                    order: { order },
+                    by: { by.into_iter().collect::<Result<Vec<_>, E>>()? },
+                    from: { from },
+                },
+                Join => {
+                    left: { left },
+                    right: { right },
+                    operator: { operator.into_result_expressions()? },
+                },
+                Set => {
+                    operator: { operator },
+                    left: { left },
+                    right: { right },
+                },
+                Distinct => {
+                    from: { from },
+                },
+                WithAlias => {
+                    from: { from },
+                    alias: { alias },
+                },
+                #[unnamed] Table => {
+                    context_key: { context_key },
+                },
+            }
+        );
+        Ok(res)
+    }
+}
+
 impl<B, E> RelT<B, E> {
     pub fn is_leaf(&self) -> bool {
         match &self.root {
@@ -461,122 +554,141 @@ impl<B, E> RelT<B, E> {
     }
 }
 
+/// A representation of the RelT algebra
+pub trait Repr: Send + Sync {
+    type ExprRepr: ExprRepr;
+    type RelRepr: RelRepr<Self::ExprRepr>;
+    fn to_inner_context<E>(root: GenericRel<&E, &Self::RelRepr>) -> Context<Self::ExprRepr>;
+}
+
 /// A rule for rebasing a relation tree. Note that rebasing a relation tree
 /// means also rebasing all the wrapped expression trees.
-#[async_trait]
-pub trait RebaseRel<Meta, ExprMeta>: Send + Sync {
-    /// The type of the new (after rebase) expression tree labels
-    type NewExprMeta: ExprTryComplete + Send + Sync + Clone;
-    /// The type of the new (after rebase) relation tree labels
-    type NewMeta: RelTryComplete<ExprT<Self::NewExprMeta>> + Send + Sync + Clone;
-    /// The type of the associated rebase rule for wrapped expression trees
-    type AsRebaseExpr: RebaseExpr<ExprMeta, NewMeta = Self::NewExprMeta>;
+pub trait RebaseRel<'a, From: Repr>: Send + Sync {
+    type To: Repr;
     /// To what do we want to rebase the given node `at`? If returns `None`, we do not
     /// touch it and, instead, the recursion carries on.
-    async fn maybe_at(
-        &self,
-        at: &RelT<Meta, ExprT<ExprMeta>>,
-    ) -> Option<RelT<Self::NewMeta, ExprT<Self::NewExprMeta>>>;
-    /// Derive the associated expression rebase rule. This could depend on the
-    /// current relation node type (`root`).
-    async fn as_rebase_expr(
-        &self,
-        root: &GenericRel<ExprT<ExprMeta>, RelT<Self::NewMeta, ExprT<Self::NewExprMeta>>>,
-    ) -> Self::AsRebaseExpr;
+    fn rebase_at(
+        &'a self,
+        at: &'a Relation<From>,
+    ) -> Pin<Box<dyn Future<Output = Option<Relation<Self::To>>> + Send + 'a>>;
+
+    fn rebase(
+        &'a self,
+        root: &'a Relation<From>,
+    ) -> Pin<Box<dyn Future<Output = Relation<Self::To>> + Send + 'a>>
+    where
+        <Self::To as Repr>::RelRepr: Clone + Send + Sync + 'static,
+        <Self::To as Repr>::ExprRepr: Clone + Send + Sync + 'static,
+    {
+        self.rebase_at(root)
+            .then(move |res| {
+                if let Some(new_base) = res {
+                    ready(new_base).boxed()
+                } else {
+                    root.root
+                        .map_async(move |child| self.rebase(child))
+                        .map(|rebased_root| {
+                            let inherited = rebased_root
+                                .map_expressions(&|expr| expr)
+                                .map(&mut |child| child.board.as_ref())
+                                .into_result()
+                                .map(|root| Self::To::to_inner_context(root))
+                                .unwrap_or_default();
+                            let inherited_ref = &inherited;
+                            let rebased_root =
+                                rebased_root.map_expressions(&move |expr: &ExprT<
+                                    From::ExprRepr,
+                                >| {
+                                    inherited_ref.rebase(expr)
+                                });
+                            RelT::from(rebased_root)
+                        })
+                        .boxed()
+                }
+            })
+            .boxed()
+    }
 }
 
-#[async_trait]
-impl RebaseRel<TableMeta, ExprMeta> for Context<TableMeta> {
-    type NewExprMeta = ExprMeta;
-    type NewMeta = TableMeta;
-    type AsRebaseExpr = Context<ExprMeta>;
-    async fn maybe_at(
-        &self,
-        at: &RelT<TableMeta, ExprT<ExprMeta>>,
-    ) -> Option<RelT<Self::NewMeta, ExprT<Self::NewExprMeta>>> {
-        match &at.root {
-            GenericRel::Table(Table(context_key)) => Some(RelT {
-                root: GenericRel::Table(Table(context_key.clone())),
-                board: self
-                    .get(context_key)
-                    .map(|v| v.clone())
-                    .map_err(|e| e.into_table_error()),
-            }),
-            _ => None,
+pub struct RebaseClosure<'a, I, C, Fut, O> {
+    _input: PhantomData<&'a I>,
+    closure: C,
+    _fut: PhantomData<Fut>,
+    _output: PhantomData<O>,
+}
+
+impl<'a, I, C, Fut, O> RebaseClosure<'a, I, C, Fut, O>
+where
+    I: Repr,
+    C: Fn(&'a I::RelRepr, &'a ContextKey) -> Fut,
+    Fut: Future<Output = ValidateResult<O::RelRepr>> + 'a,
+    O: Repr,
+{
+    pub fn new(closure: C) -> Self {
+        Self {
+            _input: PhantomData,
+            closure,
+            _fut: PhantomData,
+            _output: PhantomData,
         }
     }
-    async fn as_rebase_expr(
-        &self,
-        root: &GenericRel<ExprT<ExprMeta>, RelT<Self::NewMeta, ExprT<Self::NewExprMeta>>>,
-    ) -> Self::AsRebaseExpr {
-        let mut inherited_ctx = Context::new();
-        root.map(&mut |child| {
-            if let Ok(ctx) = child.try_to_context() {
-                inherited_ctx.extend(ctx);
-            }
-        });
-        inherited_ctx
-    }
 }
 
-impl<Meta, ExprMeta> RelT<Meta, ExprT<ExprMeta>>
+// FIXME: Potentially a refactor of RebaseClosure could handle this?
+unsafe impl<'a, I, C, Fut, O> Sync for RebaseClosure<'a, I, C, Fut, O> where C: Sync {}
+
+impl<'a, From, C, Fut, To> RebaseRel<'a, From> for RebaseClosure<'a, From, C, Fut, To>
 where
-    Meta: Send + Sync + Clone,
-    ExprMeta: Send + Sync + Clone,
+    From: Repr,
+    To: Repr,
+    C: Fn(&'a From::RelRepr, &'a ContextKey) -> Fut + Send + Sync,
+    Fut: Future<Output = ValidateResult<To::RelRepr>> + Send + 'a,
 {
-    /// Asynchronously rebase the relation tree using the rebase rule `R`.
-    /// This can be used to replay the tree against a different context,
-    /// or to recursively transform subtrees.
-    pub fn rebase<'a, R>(
+    type To = To;
+    fn rebase_at(
         &'a self,
-        r: &'a R,
-    ) -> impl Future<Output = RelT<R::NewMeta, ExprT<R::NewExprMeta>>> + Send + 'a
-    where
-        R: RebaseRel<Meta, ExprMeta> + Send + Sync,
-    {
+        at: &'a Relation<From>,
+    ) -> Pin<Box<dyn Future<Output = Option<Relation<Self::To>>> + Send + 'a>> {
         async move {
-            if let Some(new_base) = r.maybe_at(self).await {
-                new_base
-            } else {
-                let rebased_root = self
-                    .root
-                    .map_async(async move |child: &Arc<Self>| child.rebase(r).await)
-                    .await;
-
-                let inherited = r.as_rebase_expr(&rebased_root).await;
-
-                let inherited_ref = &inherited;
-
-                let rebased_root = rebased_root
-                    .map_expressions_async(&async move |expr: &ExprT<ExprMeta>| {
-                        expr.rebase(inherited_ref).await
-                    })
-                    .await;
-
-                RelT::from(rebased_root)
+            match &at.root {
+                GenericRel::Table(Table(context_key)) => Some(RelT {
+                    root: GenericRel::Table(Table(context_key.clone())),
+                    board: match at.board.as_ref() {
+                        Err(e) => Err(e.clone()),
+                        Ok(board) => (self.closure)(board, context_key).await,
+                    },
+                }),
+                _ => None,
             }
         }
         .boxed()
     }
 }
 
-impl<B, E> RelT<B, E>
+pub type Relation<R: Repr> = RelT<R::RelRepr, ExprT<R::ExprRepr>>;
+
+impl<R, E> RelT<R, ExprT<E>>
 where
-    B: RelTryComplete<E>,
-    E: Clone,
+    R: RelRepr<E>,
+    E: ExprRepr,
 {
-    pub fn from<T: Into<GenericRel<E, Self>>>(t: T) -> Self {
-        let rel: GenericRel<E, Self> = t.into();
+    pub fn from<T: Into<GenericRel<ExprT<E>, Self>>>(t: T) -> Self {
+        let rel = t.into();
         let root = rel.map_owned(&mut |c| Arc::new(c));
         Self::from_wrapped(root)
     }
-    pub fn from_wrapped<T: Into<GenericRel<E, Arc<Self>>>>(t: T) -> Self {
-        let root: GenericRel<E, Arc<Self>> = t.into();
-        let board = root
-            .map(&mut |c| c.board.as_ref())
-            .into_result()
-            .map_err(|e| e.clone())
-            .and_then(|n| B::try_complete(n));
+    pub fn from_wrapped<T: Into<GenericRel<ExprT<E>, Arc<Self>>>>(t: T) -> Self {
+        let root = t.into();
+        let board = try {
+            let inherited: GenericRel<_, &R> = root
+                .map(&mut |c| c.board.as_ref())
+                .into_result()
+                .map_err(|e| e.clone())?;
+            let as_ref: GenericRel<_, &R> =
+                inherited.map_expressions(&|expr: &ExprT<E>| expr.board.as_ref());
+            let flattened = as_ref.into_result_expressions().map_err(|e| e.clone())?;
+            R::dot(flattened)?
+        };
         Self { root, board }
     }
 }
@@ -635,66 +747,10 @@ impl ToContext for TableMeta {
     }
 }
 
-impl RelTryComplete for TableMeta {
-    fn try_complete(node: Rel<&Self>) -> ValidateResult<Self> {
-        let columns: Context<ExprMeta> = match &node {
-            Rel::WithAlias(WithAlias { from, alias }) => {
-                let ctx = from
-                    .to_context()
-                    .into_iter()
-                    .map(|(k, v)| (k.with_prefix(&alias), v.clone()))
-                    .collect();
-                Ok(ctx)
-            }
-            Rel::Table(Table(_)) => Err(ValidateError::Internal(
-                "tried to complete from leaf".to_string(),
-            )),
-            Rel::Projection(Projection { attributes, from })
-            | Rel::Aggregation(Aggregation {
-                attributes, from, ..
-            }) => {
-                let ctx: Context<ExprMeta> = attributes
-                    .iter()
-                    .enumerate()
-                    .map(|(i, expr)| {
-                        let key = if let Expr::As(As { alias, .. }) = &expr.root {
-                            ContextKey::with_name(alias)
-                        } else {
-                            ContextKey::with_name(&format!("f{}_", i))
-                        };
-                        Ok((key, expr.board.clone()?))
-                    })
-                    .collect::<ValidateResult<_>>()?;
-                Ok(ctx)
-            }
-            Rel::Offset(Offset { from, .. })
-            | Rel::Limit(Limit { from, .. })
-            | Rel::OrderBy(OrderBy { from, .. })
-            | Rel::Distinct(Distinct { from, .. })
-            | Rel::Selection(Selection { from, .. }) => Ok(from.columns.clone()),
-            Rel::Join(Join { left, right, .. }) => {
-                let mut ctx = left.to_context();
-                ctx.extend(right.to_context().into_iter());
-                Ok(ctx)
-            }
-            Rel::Set(Set { left, right, .. }) => {
-                let right = right.to_context();
-                let ctx: Context<ExprMeta> = left
-                    .to_context()
-                    .into_iter()
-                    .map(|(key, meta)| {
-                        let right_m = right.get_column(&key)?;
-
-                        if meta == *right_m {
-                            Ok((ContextKey::with_name(key.name()), meta))
-                        } else {
-                            Err(ValidateError::SchemaMismatch(key.to_string()))
-                        }
-                    })
-                    .collect::<ValidateResult<_>>()?;
-                Ok(ctx)
-            }
-        }?;
+impl RelRepr<ExprMeta> for TableMeta {
+    fn dot(node: GenericRel<&ExprMeta, &Self>) -> ValidateResult<Self> {
+        let inherited = node.map(&mut |child| &child.columns);
+        let columns: Context<ExprMeta> = Context::dot(inherited)?;
 
         let mut locs = HashSet::new();
         node.map(&mut |table_meta| {
@@ -730,5 +786,15 @@ impl RelTryComplete for TableMeta {
             source,
             audience,
         })
+    }
+}
+
+impl Repr for TableMeta {
+    type ExprRepr = ExprMeta;
+    type RelRepr = Self;
+    fn to_inner_context<E>(root: GenericRel<&E, &Self::RelRepr>) -> Context<Self::ExprRepr> {
+        let mut ctx = Context::new();
+        root.map(&mut |child| ctx.extend(child.to_context()));
+        ctx
     }
 }

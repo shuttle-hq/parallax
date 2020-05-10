@@ -477,9 +477,16 @@ pub mod tests {
             .get_mut(&ContextKey::with_name("business_id"))
             .unwrap();
         business_id_meta.ty = DataType::Integer;
-        let rebased_tree = Runtime::new()
-            .unwrap()
-            .block_on(original_tree.rebase(&new_ctx));
+        let new_ctx_ref = &new_ctx;
+        let rebase_fut = rebase_closure!(original_tree => TableMeta -> TableMeta {
+            async move |_, key| {
+                new_ctx_ref
+                    .get(key)
+                    .map(|v| v.clone())
+                    .map_err(|e| e.into_table_error())
+            }
+        });
+        let rebased_tree = Runtime::new().unwrap().block_on(rebase_fut);
         assert_eq!(
             rebased_tree
                 .board
@@ -510,6 +517,7 @@ pub mod tests {
 
     #[test]
     fn validate_group_by() {
+        crate::tests::setup_test();
         let rel_t = test_validate_for(
             "\
             SELECT categories, AVG(review_count) \

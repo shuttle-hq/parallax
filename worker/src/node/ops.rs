@@ -102,7 +102,9 @@ pub async fn context<A: Access>(access: &A) -> Result<Context<TableMeta>> {
 
             let mut table_meta = access
                 .backend(&backend_block)?
-                .get_meta(&data_in_context)
+                .probe(&data_in_context)
+                .await?
+                .to_meta()
                 .await?;
 
             table_meta.loc = Some(backend_block.clone());

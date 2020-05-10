@@ -1,13 +1,15 @@
 use crate::common::{Deserialize, Serialize};
 
+use entish::prelude::*;
+
 pub use super::*;
 
-pub trait RelTryComplete<E = ExprT>: Sized {
-    fn try_complete(node: GenericRel<E, &Self>) -> ValidateResult<Self>;
+pub trait RelRepr<E>: Sized + Send + Sync {
+    fn dot(node: GenericRel<&E, &Self>) -> ValidateResult<Self>;
 }
 
-pub trait ExprTryComplete: Sized {
-    fn try_complete(node: Expr<&Self>) -> ValidateResult<Self>;
+pub trait ExprRepr: Sized + Send + Sync + Clone {
+    fn dot(node: Expr<&Self>) -> ValidateResult<Self>;
 }
 
 macro_rules! error {
@@ -16,6 +18,99 @@ macro_rules! error {
     };
     ($variant:ident) => {
         ValidateError:$variant
+    }
+}
+
+impl<E, T> RelRepr<E> for Option<T>
+where
+    T: RelRepr<E>,
+{
+    fn dot(node: GenericRel<&E, &Self>) -> ValidateResult<Self> {
+        node.map(&mut |child| child.as_ref())
+            .into_option()
+            .map(|res| T::dot(res))
+            .transpose()
+    }
+}
+
+pub trait Named {
+    fn name(&self) -> Option<&str> {
+        None
+    }
+}
+
+impl<E: Named + Send + Sync + PartialEq + Clone> RelRepr<E> for Context<E> {
+    fn dot(node: GenericRel<&E, &Self>) -> ValidateResult<Self> {
+        match node {
+            GenericRel::Table(Table(_)) => Err(ValidateError::Internal(
+                "tried to complete from leaf".to_string(),
+            )),
+            GenericRel::WithAlias(WithAlias { from, alias }) => {
+                let ctx = from
+                    .iter()
+                    .map(|(k, v)| (k.with_prefix(&alias), v.clone()))
+                    .collect();
+                Ok(ctx)
+            }
+            GenericRel::Projection(Projection { attributes, from })
+            | GenericRel::Aggregation(Aggregation {
+                attributes, from, ..
+            }) => {
+                let ctx: Context<_> = attributes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, expr)| {
+                        let key = if let Some(alias) = expr.name() {
+                            // FIXME sanitization
+                            alias.to_string()
+                        } else {
+                            format!("f{}_", i)
+                        };
+                        Ok((ContextKey::with_name(&key), (*expr).clone()))
+                    })
+                    .collect::<ValidateResult<_>>()?;
+                Ok(ctx)
+            }
+            GenericRel::Offset(Offset { from, .. })
+            | GenericRel::Limit(Limit { from, .. })
+            | GenericRel::OrderBy(OrderBy { from, .. })
+            | GenericRel::Distinct(Distinct { from, .. })
+            | GenericRel::Selection(Selection { from, .. }) => Ok(from.clone()),
+            GenericRel::Join(Join { left, right, .. }) => {
+                let mut ctx = left.clone();
+                ctx.extend(right.clone());
+                Ok(ctx)
+            }
+            GenericRel::Set(Set { left, right, .. }) => {
+                let right = right.clone();
+                let ctx: Context<_> = left
+                    .clone()
+                    .into_iter()
+                    .map(|(key, meta)| {
+                        let right_m = right.get(&key).map_err(|e| e.into_column_error())?;
+
+                        if meta == *right_m {
+                            Ok((ContextKey::with_name(key.name()), meta))
+                        } else {
+                            Err(ValidateError::SchemaMismatch(key.to_string()))
+                        }
+                    })
+                    .collect::<ValidateResult<_>>()?;
+                Ok(ctx)
+            }
+        }
+    }
+}
+
+impl<T> ExprRepr for Option<T>
+where
+    T: ExprRepr,
+{
+    fn dot(node: Expr<&Self>) -> ValidateResult<Self> {
+        node.map(&mut |child| child.as_ref())
+            .into_option()
+            .map(|res| T::dot(res))
+            .transpose()
     }
 }
 
@@ -69,8 +164,8 @@ impl std::fmt::Display for DataType {
     }
 }
 
-impl ExprTryComplete for DataType {
-    fn try_complete(node: Expr<&Self>) -> ValidateResult<Self> {
+impl ExprRepr for DataType {
+    fn dot(node: Expr<&Self>) -> ValidateResult<Self> {
         match node {
             Expr::Column(Column(ck)) => {
                 error!(Internal, (format!("tried to complete a column {}", ck)))
@@ -304,8 +399,8 @@ where
     }
 }
 
-impl ExprTryComplete for AudienceBoard {
-    fn try_complete(node: Expr<&Self>) -> ValidateResult<Self> {
+impl ExprRepr for AudienceBoard {
+    fn dot(node: Expr<&Self>) -> ValidateResult<Self> {
         let mut out = AudienceBoard::default();
         node.map_owned(&mut |child| {
             out.intersect(child.clone());
@@ -314,8 +409,8 @@ impl ExprTryComplete for AudienceBoard {
     }
 }
 
-impl ExprTryComplete for HashSet<BlockType> {
-    fn try_complete(node: Expr<&Self>) -> ValidateResult<Self> {
+impl ExprRepr for HashSet<BlockType> {
+    fn dot(node: Expr<&Self>) -> ValidateResult<Self> {
         let mut audiences = Vec::new();
         node.map_owned(&mut |child| {
             audiences.push(child);
@@ -343,8 +438,8 @@ impl Default for Mode {
     }
 }
 
-impl ExprTryComplete for Mode {
-    fn try_complete(node: Expr<&Self>) -> ValidateResult<Self> {
+impl ExprRepr for Mode {
+    fn dot(node: Expr<&Self>) -> ValidateResult<Self> {
         match node {
             Expr::Column(Column(ck)) => {
                 error!(Internal, (format!("tried to complete a column {}", ck)))
@@ -371,12 +466,12 @@ impl ExprTryComplete for Mode {
 pub enum Domain {
     Discrete { max: i64, min: i64, step: u64 },
     Continuous { min: f64, max: f64 },
-    Categorical,
+    Opaque,
 }
 
 impl Default for Domain {
     fn default() -> Self {
-        Self::Categorical
+        Self::Opaque
     }
 }
 
@@ -385,23 +480,49 @@ impl std::fmt::Display for Domain {
         match self {
             Self::Discrete { max, min, step } => write!(f, "discrete({}:{}:{})", min, step, max),
             Self::Continuous { max, min } => write!(f, "continuous({}:{})", min, max),
-            Self::Categorical => write!(f, "categorical"),
+            Self::Opaque => write!(f, "opaque"),
         }
     }
 }
 
-impl ExprTryComplete for Domain {
-    fn try_complete(node: Expr<&Self>) -> ValidateResult<Self> {
+impl ExprRepr for Domain {
+    fn dot(node: Expr<&Self>) -> ValidateResult<Self> {
         match node {
             Expr::Column(Column(ck)) => {
                 error!(Internal, (format!("tried to complete a column {}", ck)))
             }
             Expr::As(As { expr, .. }) => Ok(expr.clone()),
-            Expr::BinaryOp(BinaryOp { left, op, right }) => {
-                // TODO: this can be inferred for the arithmetic operations
-                Ok(Self::Categorical)
+            Expr::IsNull(..) | Expr::IsNotNull(..) | Expr::InList(..) | Expr::Between(..) => {
+                Ok(Self::Discrete {
+                    max: 0,
+                    min: 1,
+                    step: 1,
+                })
             }
-            _ => Ok(Self::Categorical), // default is Ok(opaque)
+            Expr::Function(Function { name, mut args, .. }) => {
+                // TODO: refactor Function struct to not have to validate this
+                // every time.
+                let arg = args.pop().ok_or(ValidateError::Expected(
+                    "function to have argument".to_string(),
+                ))?;
+                match name {
+                    FunctionName::Max | FunctionName::Min => Ok(arg.clone()),
+                    FunctionName::Avg | FunctionName::StdDev => match arg {
+                        Self::Discrete { min, max, .. } => Ok(Self::Continuous {
+                            min: *min as f64,
+                            max: *max as f64,
+                        }),
+                        _ => Ok(arg.clone()),
+                    },
+                    FunctionName::Count | FunctionName::Sum => Ok(Self::Opaque),
+                }
+            }
+            Expr::Replace(Replace { with, .. }) => Ok(with.clone()),
+            Expr::BinaryOp(BinaryOp { left, op, right }) => {
+                // TODO: this sometimes can be inferred for the arithmetic operations
+                Ok(Self::Opaque)
+            }
+            _ => Ok(Self::Opaque), // default is Ok(opaque)
         }
     }
 }

@@ -3,8 +3,8 @@ use sqlparser::ast;
 use crate::common::*;
 
 use super::{
-    AudienceBoard, CompositionError, Context, ContextKey, DataType, Domain, ExprAnsatz,
-    ExprTryComplete, Mode, ToAnsatz, ToContext, ValidateError, ValidateResult,
+    AudienceBoard, CompositionError, Context, ContextKey, DataType, Domain, ExprAnsatz, ExprRepr,
+    Mode, Named, ToAnsatz, ToContext, ValidateError, ValidateResult,
 };
 
 copy_ast_enum!(
@@ -128,7 +128,7 @@ impl std::default::Default for HashAlgorithm {
 }
 
 entish! {
-    #[derive(Map, MapOwned, From, TryInto, IntoResult)]
+    #[derive(Map, MapOwned, From, TryInto, IntoResult, IntoOption)]
     #[derive(Serialize, Deserialize, Debug, Clone)]
     #[entish(variants_as_structs)]
     pub enum Expr {
@@ -284,13 +284,37 @@ impl ToAnsatz for ExprT {
     }
 }
 
-derive_try_complete_expr! {
+#[derive(Default, Debug, PartialEq, Serialize, Deserialize, Clone)]
+pub struct ExprAlias(Option<String>);
+
+impl ExprAlias {
+    pub fn to_str(&self) -> Option<&str> {
+        self.0.as_ref().map(|s| s.as_str())
+    }
+}
+
+impl ExprRepr for ExprAlias {
+    fn dot(node: Expr<&Self>) -> ValidateResult<Self> {
+        match node {
+            Expr::As(As { alias, .. }) => Ok(Self(Some(alias.clone()))),
+            _ => Ok(Self(None)),
+        }
+    }
+}
+
+derive_expr_repr! {
     #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq,)]
     pub struct ExprMeta {
-        ty: DataType,
-        domain: Domain,
-        audience: HashSet<BlockType>,
-        mode: Mode,
+        pub ty: DataType,
+        pub audience: HashSet<BlockType>,
+        pub mode: Mode,
+        pub alias: ExprAlias,
+    }
+}
+
+impl Named for ExprMeta {
+    fn name(&self) -> Option<&str> {
+        self.alias.0.as_ref().map(|s| s.as_str())
     }
 }
 
@@ -298,19 +322,10 @@ impl Default for ExprMeta {
     fn default() -> Self {
         Self {
             ty: DataType::default(),
-            domain: Domain::default(),
             audience: HashSet::new(),
             mode: Mode::default(),
+            alias: ExprAlias::default(),
         }
-    }
-}
-
-impl<I> Expr<I>
-where
-    I: IntoIterator,
-{
-    pub fn coalesce(self) -> impl Iterator<Item = Expr<I::Item>> {
-        std::iter::once(unimplemented!())
     }
 }
 
@@ -320,16 +335,30 @@ pub struct ExprT<B = ExprMeta> {
     pub(crate) board: ValidateResult<B>,
 }
 
-#[async_trait]
-pub trait RebaseExpr<Meta>: Send + Sync {
-    type NewMeta: ExprTryComplete + Send + Sync;
-    async fn maybe_at(&self, at: &ExprT<Meta>) -> Option<ExprT<Self::NewMeta>>;
+use futures::future::ready;
+
+/// A rule for rebasing an expression tree with existing label `Meta`.
+pub trait RebaseExpr<From: ExprRepr>: Send + Sync {
+    type To: ExprRepr;
+    fn rebase_at(&self, at: &ExprT<From>) -> Option<ExprT<Self::To>>;
+
+    fn rebase(&self, root: &ExprT<From>) -> ExprT<Self::To> {
+        if let Some(new_base) = self.rebase_at(root) {
+            new_base
+        } else {
+            let rebased_root = root.root.map(&mut |child| self.rebase(child));
+            ExprT::from(rebased_root)
+        }
+    }
 }
 
-#[async_trait]
-impl RebaseExpr<ExprMeta> for Context<ExprMeta> {
-    type NewMeta = ExprMeta;
-    async fn maybe_at(&self, at: &ExprT<ExprMeta>) -> Option<ExprT<Self::NewMeta>> {
+impl<E, M> RebaseExpr<E> for Context<M>
+where
+    E: ExprRepr,
+    M: ExprRepr + Send + Sync + Clone,
+{
+    type To = M;
+    fn rebase_at(&self, at: &ExprT<E>) -> Option<ExprT<Self::To>> {
         match &at.root {
             Expr::Column(Column(context_key)) => Some(ExprT {
                 root: Expr::Column(Column(context_key.clone())),
@@ -426,33 +455,7 @@ impl<C> Expr<C> {
     }
 }
 
-impl<B> ExprT<B>
-where
-    B: Send + Sync,
-{
-    pub fn rebase<'a, R>(&'a self, r: &'a R) -> impl Future<Output = ExprT<R::NewMeta>> + Send + 'a
-    where
-        R: RebaseExpr<B> + Send + Sync,
-    {
-        async move {
-            if let Some(new_base) = r.maybe_at(self).await {
-                new_base
-            } else {
-                let rebased_root = self
-                    .root
-                    .map_async(async move |child| child.rebase(r).await)
-                    .await;
-                ExprT::from(rebased_root)
-            }
-        }
-        .boxed()
-    }
-}
-
-impl<B> ExprT<B>
-where
-    B: ExprTryComplete,
-{
+impl<E: ExprRepr> ExprT<E> {
     pub fn from<T: Into<Expr<Self>>>(t: T) -> Self {
         let expr: Expr<Self> = t.into();
         let root = expr.map_owned(&mut |c| Arc::new(c));
@@ -460,7 +463,7 @@ where
             .map(&mut |c| c.board.as_ref())
             .into_result()
             .map_err(|e| e.clone())
-            .and_then(|n| B::try_complete(n));
+            .and_then(|n| E::dot(n));
         Self { root, board }
     }
 }
