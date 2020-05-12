@@ -126,7 +126,7 @@ where
         res.map_err(|e| e.into())
     }
 
-    #[deprecated(note = "what on earth still uses this?")]
+    #[deprecated(note = "Visible for testing")]
     pub async fn get_context_from_backend(
         &self,
         project_id: &str,
@@ -174,6 +174,13 @@ where
     async fn run_query_and_get_results(&self, query_str: &str) -> Result<GetQueryResultsResponse> {
         self.to_inner()
             .run_query_and_get_results(&self.cache.project_id, &self.cache.dataset_id, query_str)
+            .await
+            .map_err(|e| e.into())
+    }
+
+    async fn lite_query(&self, query_str: &str) -> Result<GetQueryResultsResponse> {
+        self.to_inner()
+            .lite_query(query_str, &self.dataset.project_id)
             .await
             .map_err(|e| e.into())
     }

@@ -301,6 +301,7 @@ where
             .api_request::<(), _>(Method::GET, uri.parse()?, None)
             .await
     }
+
     pub async fn run_to_completion(&self, req: JobRequest) -> Result<BigQueryJob> {
         let mut job = self.send(req).await?;
         loop {
@@ -319,6 +320,24 @@ where
                 return Ok(job);
             }
         }
+    }
+
+    /// This is limited to 10 Mb (https://cloud.google.com/bigquery/docs/reference/rest/v2/jobs/query)
+    /// and should only be used for probing.
+    pub async fn lite_query(&self, sql: &str, project_id: &str) -> Result<GetQueryResultsResponse> {
+        let uri = format!(
+            "https://bigquery.googleapis.com/bigquery/v2\
+             /projects/{}/queries",
+            project_id
+        );
+        let qr = QueryRequest {
+            query: Some(sql.to_owned()),
+            use_legacy_sql: Some(false),
+            ..Default::default()
+        };
+        self.gcp
+            .api_request(Method::POST, uri.parse()?, Some(qr))
+            .await
     }
 }
 

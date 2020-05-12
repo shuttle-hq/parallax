@@ -131,7 +131,7 @@ where
             table_ref = self.table_ref
         );
 
-        let results = self.inner.run_query_and_get_results(&query_str).await?;
+        let results = self.inner.lite_query(&query_str).await?;
 
         results
             .rows
@@ -145,7 +145,7 @@ where
     async fn row_count(&self) -> Result<RowCount> {
         let query_str = format!("SELECT COUNT(*) FROM {}", self.table_ref);
 
-        let results = self.inner.run_query_and_get_results(&query_str).await?;
+        let results = self.inner.lite_query(&query_str).await?;
 
         results
             .rows
@@ -165,7 +165,7 @@ where
                 name, name, self.table_ref
             );
 
-            let results = self.inner.run_query_and_get_results(&query_str).await?;
+            let results = self.inner.lite_query(&query_str).await?;
 
             let domain: Option<_> = try {
                 let (min, max) = results.rows.and_then(|mut rows| {
