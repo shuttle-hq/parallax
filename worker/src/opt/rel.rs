@@ -262,12 +262,12 @@ to_ansatz! {
             out
         },
         Selection<Expr,> { from, where_ } => {
-            let mut out: ast::Select = from.into();
+            let mut out: ast::Select = from.wrapped();
             out.selection = Some(where_.to_ansatz()?.into());
             out
         },
         Aggregation<Expr,> { attributes, group_by, from } => {
-            let mut out: ast::Select = from.into();
+            let mut out: ast::Select = from.wrapped();
             out.projection = attributes
                 .into_iter()
                 .map(|attr| Ok(attr.to_ansatz()?.into()))
@@ -279,7 +279,7 @@ to_ansatz! {
             out
         },
         Projection<Expr,> { attributes, from } => {
-            let mut out: ast::Select = from.into();
+            let mut out: ast::Select = from.wrapped();
             out.projection = attributes
                 .into_iter()
                 .map(|attr| Ok(attr.to_ansatz()?.into()))
@@ -665,6 +665,29 @@ where
     }
 }
 
+impl<'a, From, To> RebaseRel<'a, From> for Context<To>
+where
+    From: Repr + 'a,
+    To: Repr<RelRepr = To> + RelRepr<<To as Repr>::ExprRepr> + Clone,
+{
+    type To = To;
+    fn rebase_at(
+        &'a self,
+        at: &'a Relation<From>,
+    ) -> Pin<Box<dyn Future<Output = Option<Relation<Self::To>>> + Send + 'a>> {
+        async move {
+            let getter = async move |_, context_key| {
+                self.get(context_key)
+                    .map(|r| r.clone())
+                    .map_err(|e| e.into_table_error())
+            };
+            let rebase_ = RebaseClosure::<From, _, _, To>::new(getter);
+            rebase_.rebase_at(at).await
+        }
+        .boxed()
+    }
+}
+
 pub type Relation<R: Repr> = RelT<R::RelRepr, ExprT<R::ExprRepr>>;
 
 impl<R, E> RelT<R, ExprT<E>>
@@ -768,14 +791,22 @@ impl RelRepr<ExprMeta> for TableMeta {
         };
 
         let mut audiences = Vec::new();
-        node.map(&mut |child| {
-            audiences.push(&child.audience);
-        });
+        match node {
+            GenericRel::Projection(Projection { attributes, .. }) => attributes
+                .iter()
+                .for_each(|expr_meta| audiences.push(&expr_meta.audience)),
+            _ => {
+                node.map(&mut |child| {
+                    audiences.push(&child.audience);
+                });
+            }
+        };
 
         let mut audience = audiences
             .pop()
             .map(|aud| aud.clone())
             .unwrap_or(HashSet::new());
+
         for aud in audiences.into_iter() {
             audience = audience.intersection(aud).cloned().collect();
         }

@@ -3,19 +3,19 @@ use crate::common::*;
 use crate::node::Access;
 
 use super::{
-    Aggregation, Context, ContextKey, Distinct, Domain, Expr, ExprMeta, ExprRepr, ExprT,
-    GenericRel, Join, Limit, Named, Offset, OrderBy, Projection, RebaseExpr, RebaseRel, RelRepr,
-    RelT, Relation, Repr, Selection, Set, SetOperator, Table, TableMeta, ToContext, ValidateError,
-    ValidateResult, WithAlias,
+    Aggregation, As, BinaryOp, BinaryOperator, Column, Context, ContextKey, Distinct, Expr,
+    ExprMeta, ExprRepr, ExprT, Function, FunctionName, GenericRel, Join, Limit, Named, Offset,
+    OrderBy, Projection, RebaseExpr, RebaseRel, RelRepr, RelT, Relation, Replace, Repr, Selection,
+    Set, SetOperator, Table, TableMeta, Taint, ToContext, ValidateError, ValidateResult, WithAlias,
 };
 
 derive_rel_repr! {
     over FlexExprMeta derive
     #[derive(Serialize, Deserialize, Debug, Clone,)]
     pub struct FlexTableMeta {
-        row_count: RowCount,
-        primary: PrimaryMeta,
-        columns: Context<FlexExprMeta>,
+        pub row_count: RowCount,
+        pub primary: PrimaryMeta,
+        pub columns: Context<FlexExprMeta>,
     }
 }
 
@@ -52,12 +52,12 @@ impl<'a, 'b> std::ops::Add<&'a RowCount> for &'b RowCount {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PrimaryMeta {
-    key: ContextKey,
-    maximum_frequency: MaximumFrequency,
+    pub key: ContextKey,
+    pub maximum_frequency: MaximumFrequency,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct MaximumFrequency(Option<u64>);
+#[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq)]
+pub struct MaximumFrequency(pub Option<u64>);
 
 impl From<u64> for MaximumFrequency {
     fn from(maximum_frequency: u64) -> Self {
@@ -68,7 +68,8 @@ impl From<u64> for MaximumFrequency {
 derive_expr_repr! {
     #[derive(Serialize, Deserialize, Debug, Clone, PartialEq,)]
     pub struct FlexExprMeta {
-        domain: Domain,
+        pub domain_sensitivity: DomainSensitivity,
+        pub taint: Taint,
     }
 }
 
@@ -120,6 +121,154 @@ impl<E> RelRepr<E> for MaximumFrequency {
     }
 }
 
+#[derive(Debug, PartialEq, Serialize, Deserialize, Copy, Clone)]
+pub enum Domain {
+    Discrete { max: i64, min: i64, step: u64 },
+    Continuous { min: f64, max: f64 },
+    Opaque,
+}
+
+impl Domain {
+    fn to_sensitivity(&self) -> Sensitivity {
+        let sensitivity = match self {
+            Self::Discrete { max, min, .. } => Some((max - min) as f64),
+            Self::Continuous { max, min, .. } => Some(max - min),
+            Self::Opaque => None,
+        };
+        Sensitivity(sensitivity)
+    }
+}
+
+impl Default for Domain {
+    fn default() -> Self {
+        Self::Opaque
+    }
+}
+
+impl std::fmt::Display for Domain {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Discrete { max, min, step } => write!(f, "discrete({}:{}:{})", min, step, max),
+            Self::Continuous { max, min } => write!(f, "continuous({}:{})", min, max),
+            Self::Opaque => write!(f, "opaque"),
+        }
+    }
+}
+
+impl ExprRepr for Domain {
+    fn dot(node: Expr<&Self>) -> ValidateResult<Self> {
+        match node {
+            Expr::Column(Column(ck)) => Err(ValidateError::Internal(format!(
+                "tried to complete a column {}",
+                ck
+            ))),
+            Expr::As(As { expr, .. }) => Ok(expr.clone()),
+            Expr::IsNull(..) | Expr::IsNotNull(..) | Expr::InList(..) | Expr::Between(..) => {
+                Ok(Self::Discrete {
+                    max: 0,
+                    min: 1,
+                    step: 1,
+                })
+            }
+            Expr::Function(Function { name, mut args, .. }) => {
+                // TODO: refactor Function struct to not have to validate this
+                // every time.
+                let arg = args.pop().ok_or(ValidateError::Expected(
+                    "function to have argument".to_string(),
+                ))?;
+                match name {
+                    FunctionName::Max | FunctionName::Min => Ok(arg.clone()),
+                    FunctionName::Avg | FunctionName::StdDev => match arg {
+                        Self::Discrete { min, max, .. } => Ok(Self::Continuous {
+                            min: *min as f64,
+                            max: *max as f64,
+                        }),
+                        _ => Ok(arg.clone()),
+                    },
+                    FunctionName::Count | FunctionName::Sum => Ok(Self::Opaque),
+                }
+            }
+            Expr::Replace(Replace { with, .. }) => Ok(with.clone()),
+            Expr::BinaryOp(BinaryOp { left, op, right }) => {
+                // TODO: this sometimes can be inferred for the arithmetic operations
+                Ok(Self::Opaque)
+            }
+            _ => Ok(Self::Opaque), // default is Ok(opaque)
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize, Copy, Clone)]
+pub struct Sensitivity(pub Option<f64>);
+
+#[derive(Debug, PartialEq, Serialize, Deserialize, Copy, Clone)]
+pub struct DomainSensitivity {
+    pub domain: Domain,
+    pub sensitivity: Sensitivity,
+    pub maximum_frequency: MaximumFrequency,
+}
+
+impl ExprRepr for DomainSensitivity {
+    fn dot(node: Expr<&Self>) -> ValidateResult<Self> {
+        let domain = Domain::dot(node.map(&mut |child| &child.domain))?;
+
+        let mut maximum_frequency = None;
+        node.map(&mut |child| {
+            if let Some(child_mf) = child.maximum_frequency.0.as_ref() {
+                if let Some(mf) = maximum_frequency.as_mut() {
+                    *mf = max(*mf, *child_mf);
+                } else {
+                    maximum_frequency = Some(*child_mf);
+                }
+            }
+        });
+
+        let sensitivity = match node.map(&mut |child| &child.sensitivity) {
+            Expr::Column(..) => {
+                return Err(ValidateError::Internal(
+                    "tried to complete a column".to_string(),
+                ))
+            }
+            Expr::IsNull(..) | Expr::IsNotNull(..) | Expr::InList(..) | Expr::Between(..) => {
+                Some(1.)
+            }
+            Expr::Literal(..) => Some(0.),
+            Expr::BinaryOp(BinaryOp { op, .. }) => match op {
+                BinaryOperator::Plus
+                | BinaryOperator::Minus
+                | BinaryOperator::Multiply
+                | BinaryOperator::Divide
+                | BinaryOperator::Modulus => None,
+                _ => Some(1.),
+            },
+            Expr::Replace(Replace { with, .. }) => with.0.clone(),
+            Expr::Function(Function { name, mut args, .. }) => {
+                // TODO
+                let arg = args.pop().ok_or(ValidateError::Expected(
+                    "function to have argument".to_string(),
+                ))?;
+                match name {
+                    FunctionName::Count => {
+                        if maximum_frequency.is_some() {
+                            Some(1.)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+
+        Ok(Self {
+            domain,
+            sensitivity: Sensitivity(sensitivity),
+            maximum_frequency: MaximumFrequency(maximum_frequency),
+        })
+    }
+}
+
 impl<E> RelRepr<E> for PrimaryMeta {
     fn dot(node: GenericRel<&E, &Self>) -> ValidateResult<Self> {
         let mut children = HashSet::new();
@@ -141,16 +290,16 @@ impl<E> RelRepr<E> for PrimaryMeta {
     }
 }
 
-pub struct FlexTableMetaGetter<A> {
-    primary: String,
-    access: A,
+pub struct FlexTableMetaGetter<'a, A> {
+    pub primary: String,
+    pub access: &'a A,
 }
 
-impl<A> FlexTableMetaGetter<A>
+impl<'a, A> FlexTableMetaGetter<'a, A>
 where
     A: Access,
 {
-    async fn get(&self, table_meta: &TableMeta) -> crate::Result<FlexTableMeta> {
+    pub async fn get(&self, table_meta: &TableMeta) -> crate::Result<FlexTableMeta> {
         let loc = table_meta
             .loc
             .as_ref()
@@ -165,19 +314,33 @@ where
 
         let probe = backend.probe(source).await?;
 
-        let mut columns = Context::new();
-        for column in table_meta.columns.keys() {
-            let domain = probe.domain(column).await?;
-            let meta = FlexExprMeta { domain };
-            columns.insert(column.clone(), meta);
-        }
-
         let primary_key = ContextKey::with_name(&self.primary);
         let maximum_frequency = probe.maximum_frequency(&primary_key).await?;
         let primary = PrimaryMeta {
-            key: primary_key,
-            maximum_frequency,
+            key: primary_key.clone(),
+            maximum_frequency: maximum_frequency.clone(),
         };
+
+        let mut columns = Context::new();
+        for (column, previous_meta) in table_meta.columns.iter() {
+            let domain = probe.domain(column).await?;
+            let maximum_frequency = maximum_frequency.clone();
+            let sensitivity = domain.to_sensitivity();
+
+            let domain_sensitivity = DomainSensitivity {
+                domain,
+                sensitivity,
+                maximum_frequency,
+            };
+
+            let taint = column.matches(&primary_key).into();
+
+            let meta = FlexExprMeta {
+                domain_sensitivity,
+                taint,
+            };
+            columns.insert(column.clone(), meta);
+        }
 
         let row_count = probe.row_count().await?;
 
@@ -187,6 +350,18 @@ where
             columns,
         })
     }
+    pub async fn rebase(&self, rel: &Relation<TableMeta>) -> Relation<FlexTableMeta> {
+        rebase_closure!(rel => TableMeta -> FlexTableMeta {
+            async move |table_meta, ctx_key| {
+                self.get(table_meta)
+                    .await
+                    .map_err(|e| ValidateError::Wip(
+                        "something mysterious happened".to_string()
+                    ))
+            }
+        })
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -195,6 +370,7 @@ pub mod tests {
 
     use crate::node::state::tests::read_manifest;
     use crate::node::tests::mk_node;
+    use crate::opt::Taint;
     use crate::opt::{validate::Validator, Relation};
 
     use tokio::runtime::Runtime;
@@ -210,7 +386,7 @@ pub mod tests {
             let validator = Validator::new(&ctx);
             let rel_t = validator.validate_str(query_str).unwrap();
             let getter = FlexTableMetaGetter {
-                access,
+                access: &access,
                 primary: "user_id".to_string(),
             };
             let getter_ref = &getter;
@@ -233,16 +409,35 @@ pub mod tests {
             "SELECT COUNT(DISTINCT user_id), MAX(stars) FROM yelp.review",
         );
         let flex_meta = rebased.board.unwrap();
+        assert_eq!(flex_meta.row_count.0, Some(6685900));
+        assert_eq!(flex_meta.primary.maximum_frequency.0, Some(4129));
+        assert_eq!(
+            *flex_meta
+                .columns
+                .get(&ContextKey::with_name("f0_"))
+                .unwrap(),
+            FlexExprMeta {
+                domain_sensitivity: DomainSensitivity {
+                    domain: Domain::Opaque,
+                    sensitivity: Sensitivity(Some(1.0,),),
+                    maximum_frequency: MaximumFrequency(Some(4129,),),
+                },
+                taint: true.into(),
+            }
+        );
         assert_eq!(
             *flex_meta
                 .columns
                 .get(&ContextKey::with_name("f1_"))
                 .unwrap(),
             FlexExprMeta {
-                domain: Domain::Continuous { min: 1., max: 5. }
+                domain_sensitivity: DomainSensitivity {
+                    domain: Domain::Continuous { min: 1.0, max: 5.0 },
+                    sensitivity: Sensitivity(None,),
+                    maximum_frequency: MaximumFrequency(Some(4129,),),
+                },
+                taint: false.into()
             }
         );
-        assert_eq!(flex_meta.row_count.0, Some(6685900));
-        assert_eq!(flex_meta.primary.maximum_frequency.0, Some(4129));
     }
 }

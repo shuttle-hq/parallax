@@ -483,7 +483,11 @@ mod tests {
 
     #[test]
     fn query_rpc_insert_job_and_it_completes() {
-        let job = insert_job_and_get("SELECT business_id FROM yelp.business");
+        let job = insert_job_and_get(
+            "SELECT business_id, COUNT(funny) \
+             FROM yelp.review \
+             GROUP BY business_id",
+        );
         println!("{:#?}", job);
         let status = job.status.unwrap();
         assert_eq!(status.state, JobState::Done as i32);

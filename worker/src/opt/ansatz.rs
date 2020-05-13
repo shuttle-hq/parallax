@@ -82,7 +82,7 @@ impl RelAnsatz {
             ast::TableFactor::NestedJoin(..) => Self::from(from).next().with_alias(alias),
         }
     }
-    fn wrapped<T>(self) -> T
+    pub fn wrapped<T>(self) -> T
     where
         Self: Into<T>,
     {

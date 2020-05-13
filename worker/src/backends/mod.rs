@@ -13,43 +13,130 @@ pub mod bigquery;
 #[cfg(feature = "google-bigquery")]
 pub use bigquery::BigQuery;
 
-#[tonic::async_trait]
-pub trait Probe: Send + Sync {
-    async fn expr(&self, key: &ContextKey) -> Result<ExprMeta>;
-    async fn to_meta(&self) -> Result<TableMeta>;
-    async fn domain(&self, key: &ContextKey) -> Result<Domain>;
-    async fn maximum_frequency(&self, key: &ContextKey) -> Result<MaximumFrequency>;
-    async fn row_count(&self) -> Result<RowCount>;
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct LastUpdated(Option<u64>);
+
+impl From<u64> for LastUpdated {
+    fn from(val: u64) -> Self {
+        LastUpdated(Some(val))
+    }
 }
 
-pub struct LazyProbe<B: ?Sized> {
-    inner: Arc<B>,
-    key: ContextKey,
+macro_rules! make_probe {
+    {
+        $vis:vis trait Probe {
+            $(
+                async fn $fn_ident:ident(
+                    &self $(, $arg_name:ident:&$lifetime:lifetime$arg_ty:ty)*
+                ) -> Result<$fn_output:ident>;
+            )*
+        }
+    } => {
+        #[async_trait]
+        $vis trait Probe: Send + Sync {
+            $(
+                async fn $fn_ident(&self $(, $arg_name:&$arg_ty)*) -> Result<$fn_output>;
+            )*
+        }
+
+        $vis enum ProbeData {
+            $($fn_output($fn_output),)*
+        }
+
+        $(
+            impl TryInto<$fn_output> for ProbeData {
+                type Error = Error;
+                fn try_into(self) -> Result<$fn_output> {
+                    match self {
+                        Self::$fn_output(val) => Ok(val),
+                        _ => Err(Error::new("incorrect data type".to_string()))
+                    }
+                }
+            }
+
+            impl Label for $fn_output {
+                fn label(
+                    &self,
+                    builder: &mut BlockType
+                ) -> std::result::Result<(), TypeError> {
+                    let label = to_snake_case(stringify!($fn_output));
+                    builder.push_label(&label);
+                    Ok(())
+                }
+                fn parse_label(
+                    s: TokenStream
+                ) -> std::result::Result<TokenStream, TypeError> {
+                    s.parse(&to_snake_case(stringify!($fn_output)))
+                }
+            }
+        )*
+
+        $vis struct LazyProbe<B: ?Sized> {
+            inner: Arc<B>,
+            key: ContextKey,
+        }
+
+        impl Block for ProbeData {
+            fn block_type(
+                &self
+            ) -> std::result::Result<BlockType, TypeError> {
+                let mut bt = BlockType::build("probe_data");
+                match self {
+                    $(
+                        Self::$fn_output(val) => val.label(&mut bt)?,
+                    )*
+                };
+                Ok(bt)
+            }
+            fn parse_block_type(
+                mut s: TokenStream
+            ) -> std::result::Result<(BlockType, TokenStream), TypeError> {
+                s = s.parse("probe_data")?;
+                s = match s.peek()? {
+                    $(
+                        val if val == &to_snake_case(stringify!($fn_output)) => {
+                            s.pass::<$fn_output>()
+                        },
+                    )*
+                    other => Err(TypeError::Invalid(other.to_string()))
+                }?;
+                s.done()
+            }
+        }
+
+        /// This does not use #[async_trait] because of compiler bug, see
+        /// [#46](https://github.com/dtolnay/async-trait/issues/46)
+        impl<B> Probe for LazyProbe<B>
+        where
+            B: Backend + ?Sized,
+        {
+            $(
+                fn $fn_ident<'life0 $(, $lifetime)*, 'async_trait>(
+                    &'life0 self $(, $arg_name:&$lifetime$arg_ty)*
+                ) -> Pin<Box<dyn Future<Output = Result<$fn_output>> + Send + 'async_trait>>
+                where
+                    $($lifetime: 'async_trait,)*
+                    'life0: 'async_trait,
+                    Self: 'async_trait
+                {
+                    async move {
+                        self.inner.probe(&self.key).await?.$fn_ident($($arg_name,)*).await
+                    }
+                    .boxed()
+                }
+            )*
+        }
+    };
 }
 
-#[async_trait]
-impl<B> Probe for LazyProbe<B>
-where
-    B: Backend + ?Sized,
-{
-    async fn expr(&self, key: &ContextKey) -> Result<ExprMeta> {
-        self.inner.probe(&self.key).await?.expr(key).await
-    }
-    async fn to_meta(&self) -> Result<TableMeta> {
-        self.inner.probe(&self.key).await?.to_meta().await
-    }
-    async fn domain(&self, key: &ContextKey) -> Result<Domain> {
-        self.inner.probe(&self.key).await?.domain(key).await
-    }
-    async fn maximum_frequency(&self, key: &ContextKey) -> Result<MaximumFrequency> {
-        self.inner
-            .probe(&self.key)
-            .await?
-            .maximum_frequency(key)
-            .await
-    }
-    async fn row_count(&self) -> Result<RowCount> {
-        self.inner.probe(&self.key).await?.row_count().await
+make_probe! {
+    pub trait Probe {
+        async fn expr(&self, key: &'life1 ContextKey) -> Result<ExprMeta>;
+        async fn to_meta(&self) -> Result<TableMeta>;
+        async fn domain(&self, key: &'life1 ContextKey) -> Result<Domain>;
+        async fn maximum_frequency(&self, key: &'life1 ContextKey) -> Result<MaximumFrequency>;
+        async fn row_count(&self) -> Result<RowCount>;
+        async fn last_updated(&self) -> Result<LastUpdated>;
     }
 }
 
@@ -57,7 +144,7 @@ where
 pub trait Backend: Send + Sync {
     async fn compute(&self, stage: Step) -> Result<()>;
 
-    async fn probe<'a>(&'a self, key: &ContextKey) -> Result<Box<dyn Probe + 'a>>;
+    async fn probe<'a>(&'a self, key: &'a ContextKey) -> Result<Box<dyn Probe + 'a>>;
 
     /// Retrieve the Results from the remote backend
     async fn get_records(&self, data_id: &ContextKey) -> Result<ContentStream<ArrowRecordBatch>>;
@@ -111,7 +198,7 @@ where
     async fn compute(&self, step: Step) -> Result<()> {
         self.to_inner()?.compute(step).await
     }
-    async fn probe<'a>(&'a self, key: &ContextKey) -> Result<Box<dyn Probe + 'a>> {
+    async fn probe<'a>(&'a self, key: &'a ContextKey) -> Result<Box<dyn Probe + 'a>> {
         let lazy_probe = LazyProbe {
             inner: self.to_inner()?,
             key: (*key).clone(),

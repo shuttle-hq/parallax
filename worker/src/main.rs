@@ -12,7 +12,8 @@
     async_closure,
     let_chains,
     associated_type_bounds,
-    box_patterns
+    box_patterns,
+    move_ref_pattern
 )]
 #![allow(warnings)]
 

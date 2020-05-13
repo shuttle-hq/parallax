@@ -3,8 +3,11 @@ use crate::node::{Access, Node};
 use crate::Result;
 
 use crate::opt::plan::{PhysicalPlan, PhysicalPlanner, Step};
+use crate::opt::transform;
 use crate::opt::validate::Validator;
-use crate::opt::{Context, ContextKey, RelT, RelTransformer, TableMeta, ValidateError};
+use crate::opt::{
+    Context, ContextKey, RelT, RelTransformer, TableMeta, Transformed, ValidateError,
+};
 
 pub(crate) mod processor;
 pub(crate) use processor::Processor;
@@ -99,20 +102,27 @@ impl QueryValidatedStage {
             "optimizing (closure: {}, policies: {})",
             closure, policies_closure
         );
-        let transformer = RelTransformer::new(&ctx, &policies, &audience);
+        let transformer = RelTransformer::new(&policies, &audience, access);
         let optimized = transformer
-            .transform_rel(self.validated)
+            .transform_rel(&self.validated)
+            .await
+            .or_else(|err| match err {
+                transform::Error::NoMatch => Ok(Transformed::default(self.validated)),
+                transform::Error::Validate(err) => Err(err),
+            })
             .map_err(|e| e.into_error())?;
 
-        match optimized.board.as_ref() {
+        match optimized.root.board.as_ref() {
             Ok(board) => {
                 debug!("optimization lead to a valid tree");
                 if board.audience.contains(&audience) {
-                    debug!("found a compliant tree, moving on");
+                    debug!("found a compliant tree, authorizing");
+                    access.expend_to_budget(optimized.cost)?;
+
                     Ok(QueryOptimizedStage {
                         closure,
                         policies_closure,
-                        optimized,
+                        optimized: optimized.root,
                     })
                 } else {
                     debug!("could not find a compliant tree");

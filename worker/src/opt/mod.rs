@@ -163,7 +163,7 @@ pub mod error;
 pub use error::{ValidateError, ValidateResult};
 
 pub mod meta;
-pub use crate::opt::meta::{AudienceBoard, DataType, Domain, ExprRepr, Mode, Named, RelRepr};
+pub use crate::opt::meta::{AudienceBoard, DataType, ExprRepr, Mode, Named, RelRepr, Taint};
 
 pub mod ansatz;
 pub use ansatz::{CompositionError, ExprAnsatz, RelAnsatz, ToAnsatz};
@@ -171,7 +171,7 @@ pub use ansatz::{CompositionError, ExprAnsatz, RelAnsatz, ToAnsatz};
 pub mod plan;
 
 pub mod transform;
-pub use transform::{Policy, PolicyBinding, RelTransformer};
+pub use transform::{Policy, PolicyBinding, RelTransformer, Transformed};
 
 pub mod rel;
 pub use rel::*;
@@ -218,6 +218,9 @@ impl ContextKey {
             .iter()
             .zip(other.0.iter())
             .all(|(m, o)| o == "*" || m == o)
+    }
+    pub fn prefix_matches(&self, other: &Self) -> bool {
+        self.0[1..] == other.0[1..]
     }
     pub fn inv_matches(&self, other: &Self) -> bool {
         self.0

@@ -6,7 +6,7 @@ pub use super::{Backends, Node, Peer, Scope, Shared};
 use crate::backends::Backend;
 use crate::job::{Job, Processor};
 use crate::opt::PolicyBinding;
-use crate::opt::{Context, TableMeta};
+use crate::opt::{Context, ContextKey, TableMeta};
 
 macro_rules! access_error {
     ($culprit:ident: $kind:ident, $desc:tt $(, $arg:tt)*) => {
@@ -96,6 +96,10 @@ pub trait Access: Sized + Send + Sync + 'static {
                 .map_err(|e| ScopeError::from(e))
                 .map_err(|e| Error::from(e))
         })
+    }
+
+    fn expend_to_budget(&self, cost: HashMap<ContextKey, f64>) -> Result<()> {
+        ops::expend_to_budget(self, cost)
     }
 
     fn policies_for_group(&self, audience: &str) -> Result<Context<PolicyBinding>> {

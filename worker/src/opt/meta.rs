@@ -322,6 +322,7 @@ impl ExprRepr for DataType {
             }
             Expr::Hash(Hash { .. }) => Ok(DataType::Bytes),
             Expr::Replace(Replace { with, .. }) => Ok(*with),
+            Expr::Noisy(Noisy { expr, .. }) => Ok(*expr),
         }
     }
 }
@@ -462,67 +463,21 @@ impl ExprRepr for Mode {
     }
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize, Copy, Clone)]
-pub enum Domain {
-    Discrete { max: i64, min: i64, step: u64 },
-    Continuous { min: f64, max: f64 },
-    Opaque,
-}
+#[derive(Default, Debug, PartialEq, Serialize, Deserialize, Copy, Clone)]
+pub struct Taint(pub bool);
 
-impl Default for Domain {
-    fn default() -> Self {
-        Self::Opaque
+impl From<bool> for Taint {
+    fn from(val: bool) -> Self {
+        Self(val)
     }
 }
 
-impl std::fmt::Display for Domain {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Discrete { max, min, step } => write!(f, "discrete({}:{}:{})", min, step, max),
-            Self::Continuous { max, min } => write!(f, "continuous({}:{})", min, max),
-            Self::Opaque => write!(f, "opaque"),
-        }
-    }
-}
-
-impl ExprRepr for Domain {
+impl ExprRepr for Taint {
     fn dot(node: Expr<&Self>) -> ValidateResult<Self> {
-        match node {
-            Expr::Column(Column(ck)) => {
-                error!(Internal, (format!("tried to complete a column {}", ck)))
-            }
-            Expr::As(As { expr, .. }) => Ok(expr.clone()),
-            Expr::IsNull(..) | Expr::IsNotNull(..) | Expr::InList(..) | Expr::Between(..) => {
-                Ok(Self::Discrete {
-                    max: 0,
-                    min: 1,
-                    step: 1,
-                })
-            }
-            Expr::Function(Function { name, mut args, .. }) => {
-                // TODO: refactor Function struct to not have to validate this
-                // every time.
-                let arg = args.pop().ok_or(ValidateError::Expected(
-                    "function to have argument".to_string(),
-                ))?;
-                match name {
-                    FunctionName::Max | FunctionName::Min => Ok(arg.clone()),
-                    FunctionName::Avg | FunctionName::StdDev => match arg {
-                        Self::Discrete { min, max, .. } => Ok(Self::Continuous {
-                            min: *min as f64,
-                            max: *max as f64,
-                        }),
-                        _ => Ok(arg.clone()),
-                    },
-                    FunctionName::Count | FunctionName::Sum => Ok(Self::Opaque),
-                }
-            }
-            Expr::Replace(Replace { with, .. }) => Ok(with.clone()),
-            Expr::BinaryOp(BinaryOp { left, op, right }) => {
-                // TODO: this sometimes can be inferred for the arithmetic operations
-                Ok(Self::Opaque)
-            }
-            _ => Ok(Self::Opaque), // default is Ok(opaque)
-        }
+        let mut taint = false;
+        node.map(&mut |child| {
+            taint = taint || child.0;
+        });
+        Ok(Self(taint))
     }
 }

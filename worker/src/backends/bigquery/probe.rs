@@ -1,6 +1,6 @@
 use crate::common::*;
 
-use crate::backends::Probe;
+use crate::backends::{LastUpdated, Probe};
 use crate::gcp::bigquery::{JobBuilder, TableRef};
 use crate::opt::{
     Context, ContextError, ContextKey, DataType, Domain, ExprMeta, MaximumFrequency, Mode,
@@ -120,7 +120,7 @@ where
     }
     async fn maximum_frequency(&self, key: &ContextKey) -> Result<MaximumFrequency> {
         let query_str = format!(
-            "SELECT MAX(freq)\
+            "SELECT MAX(freq) \
              FROM (\
                SELECT {key} as key, \
                       COUNT(*) as freq \
@@ -206,5 +206,34 @@ where
             source,
             ..Default::default()
         })
+    }
+    async fn last_updated(&self) -> Result<LastUpdated> {
+        let t = std::time::SystemTime::now();
+
+        let (project_id, dataset_id, table_id) = self.table_ref.unwrap();
+        let query_str = format!(
+            "SELECT last_modified_time \
+             FROM {project_id}.{dataset_id}.__TABLES__ where table_id = '{table_id}'",
+            project_id = project_id,
+            dataset_id = dataset_id,
+            table_id = table_id
+        );
+
+        let results = self.inner.lite_query(&query_str).await?;
+
+        debug!(
+            "Time taken for last_updated: {}ms",
+            t.elapsed().unwrap().as_millis()
+        );
+
+        results
+            .rows
+            .and_then(|mut rows| {
+                let mut cells = rows.pop()?.f?;
+                let last_modified_time = cells.pop()?.v?;
+                last_modified_time.parse::<u64>().ok()
+            })
+            .ok_or(Error::new("invalid response from backend"))
+            .map(|last_modified_time| last_modified_time.into())
     }
 }

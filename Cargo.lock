@@ -1976,6 +1976,7 @@ dependencies = [
 name = "parallax-worker"
 version = "0.1.0"
 dependencies = [
+ "Inflector",
  "async-stream",
  "async-trait",
  "base64 0.11.0",

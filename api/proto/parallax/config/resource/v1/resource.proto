@@ -192,7 +192,17 @@ message Policy {
     WhitelistPolicy whitelist = 1;
     HashPolicy hash = 2;
     ObfuscatePolicy obfuscate = 3;
+    DifferentialPrivacyPolicy differential_privacy = 4;
   }
+}
+
+message DifferentialPrivacyPolicy {
+  string name = 1;
+  reserved 2 to 5;
+
+  string entity = 6;
+  double epsilon = 7;
+  uint64 bucket_size = 8;
 }
 
 message WhitelistPolicy {
@@ -229,6 +239,14 @@ message PolicyBinding {
   repeated string groups = 6;
   repeated string policies = 7;
   uint64 priority = 8;
+  PolicyBudget budget = 9;
+}
+
+message PolicyBudget {
+  reserved 1 to 5;
+
+  double maximum = 6;
+  double used = 7;
 }
 
 message Resource {

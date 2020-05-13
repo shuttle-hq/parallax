@@ -154,6 +154,73 @@ pub fn groups_for_user<A: Access>(access: &A, user_id: &str) -> Result<Vec<Block
     Ok(groups)
 }
 
+pub fn expend_to_budget<A, I>(access: &A, expense: I) -> Result<()>
+where
+    A: Access,
+    I: IntoIterator<Item = (ContextKey, f64)>,
+{
+    // FIXME: refactor, this is really dirty (though correct AFAIK)
+    let mut closure = HashMap::new();
+    for (key, cost) in expense.into_iter() {
+        let prefix = key.prefix().next().unwrap();
+        let resource_type = block_type!("resource"."dataset".prefix);
+        let entry = if closure.contains_key(&resource_type) {
+            closure.get_mut(&resource_type).unwrap()
+        } else {
+            let block = access.resource(&resource_type)?;
+            closure.insert(resource_type.clone(), (block, Vec::new()));
+            closure.get_mut(&resource_type).unwrap()
+        };
+        entry.1.push((key, cost));
+    }
+
+    let mut locks = HashMap::new();
+    let mut feasible = true;
+    for (block_type, (block, expenses)) in closure.iter() {
+        let lock = block.write().unwrap();
+        let dataset: Dataset = block
+            .read_with(|dataset| dataset.clone())?
+            .unwrap()
+            .try_into()?;
+        for expense in expenses.iter() {
+            let matching = dataset
+                .policy_bindings
+                .iter()
+                .find(|binding| &binding.name == expense.0.name())
+                .and_then(|binding| binding.budget.as_ref());
+            if let Some(budget) = matching {
+                feasible = budget.maximum >= budget.used + expense.1;
+            }
+        }
+        locks.insert(block_type.clone(), (lock, dataset));
+    }
+
+    if feasible {
+        for (block_type, (mut lock, mut dataset)) in locks.into_iter() {
+            let (block, expenses) = closure.get(&block_type).unwrap();
+            for (context_key, cost) in expenses.iter() {
+                for binding in dataset.policy_bindings.iter_mut() {
+                    if &binding.name == context_key.name() {
+                        if let Some(budget) = binding.budget.as_mut() {
+                            budget.used += *cost;
+                        }
+                    }
+                }
+            }
+            *lock = Some(Resource {
+                resource: Some(dataset.into()),
+            });
+            block.push(lock).unwrap();
+        }
+        Ok(())
+    } else {
+        locks.into_iter().for_each(|(block_type, lock)| {
+            closure.get(&block_type).unwrap().0.abort(lock.0).unwrap()
+        });
+        Err(Error::new("wip"))
+    }
+}
+
 pub fn policies_for_group<A: Access>(access: &A, audience: &str) -> Result<Context<PolicyBinding>> {
     let mut context = Context::new();
     for resource in access.resources(&block_type!("resource"."dataset"."*"))? {
@@ -177,7 +244,7 @@ fn dataset_as_policy_context(
         .map(|policy| Ok((policy.block_type()?, Policy(policy.try_unwrap()?))))
         .collect::<std::result::Result<Scope<Policy>, ScopeError>>()?;
 
-    let mut policy_bindings = HashMap::new();
+    let mut ctx = Context::new();
 
     for binding in dataset.policy_bindings.into_iter() {
         let name = &binding.name;
@@ -189,6 +256,7 @@ fn dataset_as_policy_context(
             .collect::<std::result::Result<HashSet<_>, TypeError>>()?;
 
         if target_audience.contains(&audience_ty) {
+            let mut policies = Vec::new();
             for policy_ref in binding.policies.into_iter() {
                 let policy_type = BlockType::parse::<ApiPolicy>(&policy_ref)?.0;
 
@@ -197,29 +265,21 @@ fn dataset_as_policy_context(
                     .ok_or(ScopeError::not_found(&policy_type))?
                     .clone();
 
-                let binding = PolicyBinding {
-                    policy,
-                    priority: binding.priority,
-                };
-
-                policy_bindings
-                    .entry(policy_type)
-                    .and_modify(|existing: &mut PolicyBinding| {
-                        existing.priority = max(existing.priority, binding.priority);
-                    })
-                    .or_insert(binding);
+                policies.push(policy);
             }
+
+            let binding = PolicyBinding {
+                policies,
+                priority: binding.priority,
+                budget: binding.budget,
+            };
+
+            ctx.insert(
+                ContextKey::with_name(name).and_prefix(dataset_name),
+                binding,
+            );
         }
     }
 
-    let as_context = policy_bindings
-        .into_iter()
-        .map(|(pt, binding)| {
-            ContextKey::from_iter(pt.into_iter())
-                .map(|ck| (ck.and_prefix(dataset_name), binding))
-                .unwrap()
-        })
-        .collect();
-
-    Ok(as_context)
+    Ok(ctx)
 }

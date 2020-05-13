@@ -7,6 +7,21 @@ use super::{
     Mode, Named, ToAnsatz, ToContext, ValidateError, ValidateResult,
 };
 
+macro_rules! sql_parser_expr {
+    ($lit:literal $(, $key:ident = $val:tt)*) => {
+        {
+            let sql = format!($lit $(, $key = $val)*);
+            let mut tokenizer = sqlparser::tokenizer::Tokenizer::new(
+                &sqlparser::dialect::GenericDialect {},
+                &sql
+            );
+            let tokens = tokenizer.tokenize().unwrap();
+            let mut parser = sqlparser::parser::Parser::new(tokens);
+            parser.parse_expr().unwrap()
+        }
+    };
+}
+
 copy_ast_enum!(
     #[derive(Serialize, Deserialize, Debug, Clone,)]
     pub enum ast::BinaryOperator as BinaryOperator {
@@ -127,6 +142,11 @@ impl std::default::Default for HashAlgorithm {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+pub enum Distribution {
+    Laplace { mean: f64, variance: f64 }, // FIXME
+}
+
 entish! {
     #[derive(Map, MapOwned, From, TryInto, IntoResult, IntoOption)]
     #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -180,6 +200,10 @@ entish! {
         Replace {
             pub expr: Self,
             pub with: Self
+        },
+        Noisy {
+            pub expr: Self,
+            pub distribution: Distribution
         },
     }
 }
@@ -265,6 +289,22 @@ to_ansatz! {
         Replace<> { expr, with } => {
             with
         },
+        Noisy<> { expr, distribution } => {
+            match distribution {
+                Distribution::Laplace { mean, variance } => {
+                    // TODO: This obviously needs a bit of codegen help...
+                    ast::Expr::BinaryOp {
+                        left: Box::new(expr.into()),
+                        op: ast::BinaryOperator::Plus,
+                        right: Box::new(sql_parser_expr!(
+                            "{mean} - {variance} * (SIGN(RAND() - 0.5) * LN(1 - 2*ABS(RAND() - 0.5)))",
+                            mean = mean,
+                            variance = variance
+                        ))
+                    }
+                },
+            }
+        },
     }
 }
 
@@ -336,6 +376,18 @@ pub struct ExprT<B = ExprMeta> {
 }
 
 use futures::future::ready;
+
+impl<B: Clone> ExprT<B> {
+    pub fn from_context(key: ContextKey, ctx: &Context<B>) -> Self {
+        Self {
+            root: Expr::Column(Column(key.clone())),
+            board: ctx
+                .get(&key)
+                .map(|b| b.clone())
+                .map_err(|e| e.into_column_error()),
+        }
+    }
+}
 
 /// A rule for rebasing an expression tree with existing label `Meta`.
 pub trait RebaseExpr<From: ExprRepr>: Send + Sync {
@@ -445,6 +497,10 @@ impl<C> Expr<C> {
                 Replace => {
                     expr: { f(expr).await },
                     with: { f(with).await },
+                },
+                Noisy => {
+                    expr: { f(expr).await },
+                    distribution: { distribution.clone() },
                 },
                 #[unnamed] Column => { context_key: { context_key.clone() }, },
                 #[unnamed] Literal => { lit: { lit.clone() }, },

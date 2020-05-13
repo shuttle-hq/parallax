@@ -93,3 +93,5 @@ entish = { git = "https://github.com/openquery-io/entish.git", branch = "map-own
 jac = { path = "../../jac", features = [ "redis-backend" ] }
 
 parallax-api = { path = "../api" }
+
+Inflector = "0.11.4"

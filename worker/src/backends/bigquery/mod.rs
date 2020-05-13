@@ -37,7 +37,7 @@ pub struct ExprExtraMeta {
 
 pub struct BigQuery<O = ()> {
     dataset: DatasetId,
-    cache: DatasetId,
+    staging: DatasetId,
     big_query: BigQueryClient<O>,
     storage: BigQueryStorage<O>,
 }
@@ -80,7 +80,7 @@ impl BigQuery<()> {
             dataset_id: resource.dataset_id.clone(),
         };
 
-        let cache = DatasetId {
+        let staging = DatasetId {
             project_id: if resource.staging_project_id.is_empty() {
                 resource.project_id
             } else {
@@ -95,7 +95,7 @@ impl BigQuery<()> {
 
         let exec = BigQuery {
             dataset,
-            cache,
+            staging,
             big_query,
             storage,
         };
@@ -122,7 +122,11 @@ where
     }
 
     fn in_staging(&self, key: &ContextKey) -> Result<TableRef> {
-        let res = TableRef::new(&self.cache.project_id, &self.cache.dataset_id, key.name());
+        let res = TableRef::new(
+            &self.staging.project_id,
+            &self.staging.dataset_id,
+            key.name(),
+        );
         res.map_err(|e| e.into())
     }
 
@@ -166,14 +170,22 @@ where
 
     async fn run_query(&self, query_str: &str) -> Result<BigQueryJob> {
         self.to_inner()
-            .run_query(&self.cache.project_id, &self.cache.dataset_id, query_str)
+            .run_query(
+                &self.staging.project_id,
+                &self.staging.dataset_id,
+                query_str,
+            )
             .await
             .map_err(|e| e.into())
     }
 
     async fn run_query_and_get_results(&self, query_str: &str) -> Result<GetQueryResultsResponse> {
         self.to_inner()
-            .run_query_and_get_results(&self.cache.project_id, &self.cache.dataset_id, query_str)
+            .run_query_and_get_results(
+                &self.staging.project_id,
+                &self.staging.dataset_id,
+                query_str,
+            )
             .await
             .map_err(|e| e.into())
     }
@@ -187,7 +199,7 @@ where
 
     pub(self) fn job_builder(&self) -> JobBuilder {
         let mut builder = JobBuilder::default();
-        builder.project_id(&self.cache.project_id);
+        builder.project_id(&self.staging.project_id);
         builder
     }
 }
@@ -219,7 +231,7 @@ where
 
         let mut builder = JobBuilder::default();
         builder
-            .project_id(&self.cache.project_id.clone())
+            .project_id(&self.staging.project_id.clone())
             .query(&query_str, output);
         let job_request = builder.build()?;
         self.big_query.run_to_completion(job_request).await?;
@@ -227,7 +239,7 @@ where
         Ok(())
     }
 
-    async fn probe<'a>(&'a self, key: &ContextKey) -> Result<Box<dyn Probe + 'a>> {
+    async fn probe<'a>(&'a self, key: &'a ContextKey) -> Result<Box<dyn Probe + 'a>> {
         let table_ref = self.in_context(key)?;
         let probe = BigQueryProbe::new(self, table_ref).await?;
         Ok(Box::new(probe))
@@ -440,7 +452,7 @@ pub mod tests {
                 project_id: PROJECT_ID.to_string(),
                 dataset_id: TEST_DATASET_ID.to_string(),
             },
-            cache: DatasetId {
+            staging: DatasetId {
                 project_id: PROJECT_ID.to_string(),
                 dataset_id: STAGING_DATASET_ID.to_string(),
             },

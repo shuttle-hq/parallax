@@ -42,6 +42,7 @@
       - policy.whitelist.business_id_is_whitelisted
       - policy.obfuscate.review_id_is_obfuscated
       - policy.hash.user_id_is_hashed
+      - policy.differential_privacy.users_have_differential_privacy
       priority: 10
     policies:
     - whitelist:
@@ -57,3 +58,8 @@
         salt: []
         fields:
         - "user_id"
+    - differential_privacy:
+        name: "users_have_differential_privacy"
+        entity: "user_id"
+        epsilon: 1.0
+        bucket_size: 15

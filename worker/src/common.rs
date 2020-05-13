@@ -13,6 +13,8 @@ pub use std::pin::Pin;
 pub use std::str::FromStr;
 pub use std::sync::{Arc, Mutex};
 
+pub use inflector::cases::snakecase::to_snake_case;
+
 pub use chrono::{DateTime, Utc};
 
 pub use async_trait::async_trait;
