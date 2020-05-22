@@ -88,7 +88,7 @@ chrono = { version = "0.4", features = ["serde"] }
 
 sqlparser = "*"
 
-entish = { git = "https://github.com/openquery-io/entish.git", branch = "map-owned" }
+entish = { path = "../../entish/entish" }
 
 jac = { path = "../../jac", features = [ "redis-backend" ] }
 
