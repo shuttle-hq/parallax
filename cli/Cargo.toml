@@ -21,10 +21,6 @@ futures = "0.3.4"
 tokio = { version = "0.2.13", features = [ "full" ] }
 tokio-rustls = { version = "0.13" }
 
-# for the DenyAndLog impl of ServerCertVerifier
-# rustls = { version = "0.17.0", features = [ "dangerous_configuration" ] }
-# webpki = "0.21.2"
-
 colored = "1.9.3"
 prettytable-rs = "0.8.0"
 

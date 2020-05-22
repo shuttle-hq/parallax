@@ -94,7 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "proto/parallax/service/resource/v1/resource.proto",
             "proto/parallax/type/error/v1/error.proto",
         ],
-        &["proto/", "../../third-party/googleapis"],
+        &["proto/", "../third-party/googleapis"],
     )?;
     Ok(())
 }

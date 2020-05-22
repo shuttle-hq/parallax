@@ -11,7 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("generating protobuf descriptor");
     let mut protoc = Command::new("protoc");
     let output = protoc
-        .arg("-I../../third-party/googleapis")
+        .arg("-I../third-party/googleapis")
         .arg("-I../api/proto/")
         .arg("--include_imports")
         .arg("--include_source_info")

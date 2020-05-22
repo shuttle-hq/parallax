@@ -35,9 +35,9 @@ derive_more = "0.99.3"
 
 regex = "1.3.4"
 
-swamp = { path = "../../swamp/swamp" }
+swamp = { git = "git@github.com:openquery-io/swamp.git" }
 
-jac = { path = "../../jac", features = [ "redis-backend" ] }
+jac = { git = "git@github.com:openquery-io/jac.git", features = [ "redis-backend" ] }
 
 redis = { version = "0.15.1" } 
 

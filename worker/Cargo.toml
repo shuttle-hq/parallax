@@ -56,7 +56,7 @@ hyper-legacy = { package = "hyper", version = "0.12.27", optional = true }
 hyper = { version = "0.13.2", optional = true}
 hyper-tls = { version = "0.4.1", optional = true }
 
-bigquery-storage = { path = "../../bigquery-storage", optional = true }
+bigquery-storage = { path = "../bigquery-storage", optional = true }
 
 # for the probe
 tide = "0.5.1"
@@ -88,9 +88,9 @@ chrono = { version = "0.4", features = ["serde"] }
 
 sqlparser = "*"
 
-entish = { path = "../../entish/entish" }
+entish = { git = "git@github.com:openquery-io/entish.git" }
 
-jac = { path = "../../jac", features = [ "redis-backend" ] }
+jac = { git = "git@github.com:openquery-io/jac.git", features = [ "redis-backend" ] }
 
 parallax-api = { path = "../api" }
 

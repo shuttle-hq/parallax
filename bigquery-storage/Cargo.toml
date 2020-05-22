@@ -1,0 +1,23 @@
+[package]
+name = "bigquery-storage"
+version = "0.1.0"
+authors = ["christos <chrishadjiaslanis@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[dev-dependencies]
+tokio = { version = "0.2.6", features = [ "full" ] }
+arrow = "0.16.0"
+
+[build-dependencies]
+tonic-build = "0.2.0"
+
+[dependencies]
+tonic = {version = "0.2.0", features = ["transport", "tls", "tls-roots"]}
+prost = "0.6.1"
+prost-types = "0.6.1"
+derive_more = "0.99.0"
+
+yup-oauth2 = { version = "3.1.1" }
+futures_01 = { package = "futures", version = "=0.1.29" }
+hyper = { package = "hyper", version = "0.12.27" }
