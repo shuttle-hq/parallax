@@ -1,4 +1,6 @@
 use crate::common::*;
+use futures::future;
+use futures::try_join;
 
 use crate::node::Access;
 
@@ -227,7 +229,7 @@ impl ExprRepr for DomainSensitivity {
             Expr::Column(..) => {
                 return Err(ValidateError::Internal(
                     "tried to complete a column".to_string(),
-                ))
+                ));
             }
             Expr::IsNull(..) | Expr::IsNotNull(..) | Expr::InList(..) | Expr::Between(..) => {
                 Some(1.)
@@ -314,35 +316,48 @@ where
 
         let probe = backend.probe(source).await?;
 
-        let primary_key = ContextKey::with_name(&self.primary);
-        let maximum_frequency = probe.maximum_frequency(&primary_key).await?;
+        let primary_key = &ContextKey::with_name(&self.primary);
+        let (maximum_frequency, row_count) =
+            try_join!(probe.maximum_frequency(&primary_key), probe.row_count())?;
+
         let primary = PrimaryMeta {
             key: primary_key.clone(),
             maximum_frequency: maximum_frequency.clone(),
         };
 
+        let access = self.access;
+
         let mut columns = Context::new();
-        for (column, previous_meta) in table_meta.columns.iter() {
-            let domain = probe.domain(column).await?;
-            let maximum_frequency = maximum_frequency.clone();
-            let sensitivity = domain.to_sensitivity();
+        let columns_with_meta: Vec<crate::Result<_>> =
+            future::join_all(table_meta.columns.iter().map(
+                async move |(column, previous_meta)| {
+                    let backend = access.backend(loc)?;
+                    let probe = backend.probe(source).await?;
+                    let domain = probe.domain(column).await?;
+                    let maximum_frequency = maximum_frequency.clone();
+                    let sensitivity = domain.to_sensitivity();
 
-            let domain_sensitivity = DomainSensitivity {
-                domain,
-                sensitivity,
-                maximum_frequency,
-            };
+                    let domain_sensitivity = DomainSensitivity {
+                        domain,
+                        sensitivity,
+                        maximum_frequency,
+                    };
 
-            let taint = column.matches(&primary_key).into();
+                    let taint = column.matches(primary_key).into();
 
-            let meta = FlexExprMeta {
-                domain_sensitivity,
-                taint,
-            };
-            columns.insert(column.clone(), meta);
+                    let meta = FlexExprMeta {
+                        domain_sensitivity,
+                        taint,
+                    };
+                    Ok((column.clone(), meta))
+                },
+            ))
+            .await;
+
+        for column_with_meta in columns_with_meta {
+            let (column, meta) = column_with_meta?;
+            columns.insert(column, meta);
         }
-
-        let row_count = probe.row_count().await?;
 
         Ok(FlexTableMeta {
             row_count,

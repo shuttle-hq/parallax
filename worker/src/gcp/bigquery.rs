@@ -35,8 +35,8 @@ pub struct JobRequest {
 #[derive(Debug, Clone)]
 pub struct TableRef {
     project_id: String,
-    dataset_id: String,
-    table_id: String,
+    pub(crate) dataset_id: String,
+    pub(crate) table_id: String,
 }
 
 impl TableRef {

@@ -143,7 +143,7 @@ where
             .id;
 
         let mut job_done = false;
-        let mut delay_millis = 500;
+        let mut delay_millis = 100;
         let start_time = Instant::now();
 
         while !job_done {

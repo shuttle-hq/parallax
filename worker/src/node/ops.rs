@@ -1,3 +1,5 @@
+use futures::future;
+
 use crate::common::{Policy as ApiPolicy, *};
 use crate::Result;
 
@@ -76,41 +78,56 @@ pub fn delete_resource<A: Access>(access: &A, resource_ty: &BlockType) -> Result
 pub async fn context<A: Access>(access: &A) -> Result<Context<TableMeta>> {
     let datasets = access.resources(&block_type!("resource"."dataset"."*"))?;
     let mut ctx = Context::new();
-    for resource in datasets {
-        let dataset = resource.try_downcast::<Dataset>()?;
-        let dataset_name = dataset.name.clone();
-        for data in dataset.data.into_iter() {
-            // FIXME efficiency, needs nested scopes
-            let ((backend_block, _), data_in_context) = {
-                let mut captures_iter = DATA_RE.captures_iter(&data);
-                let (resource, data) = captures_iter
-                    .next()
-                    .and_then(|captures| {
-                        let resource = captures.name("resource")?.as_str();
-                        let data = captures.name("data")?.as_str();
-                        Some((resource, data))
-                    })
-                    .ok_or(ScopeError {
-                        kind: ScopeErrorKind::BadSplat as i32,
-                        source: data.to_string(),
-                        ..Default::default()
-                    })?;
-                let bt = BlockType::parse::<Resource>(resource)?;
-                let ck = ContextKey::from_str(data).map_err(|e| e.into_error())?;
-                (bt, ck)
-            };
 
-            let mut table_meta = access
-                .backend(&backend_block)?
-                .probe(&data_in_context)
-                .await?
-                .to_meta()
-                .await?;
+    let results: Vec<Result<_>> =
+        future::join_all(datasets.into_iter().map(async move |resource| {
+            let dataset = resource.try_downcast::<Dataset>()?;
+            let dataset_name = &dataset.name.clone();
 
-            table_meta.loc = Some(backend_block.clone());
+            let table_metas: Vec<Result<_>> =
+                future::join_all(dataset.data.into_iter().map(async move |data| {
+                    // FIXME efficiency, needs nested scopes
+                    let ((backend_block, _), data_in_context) = {
+                        let mut captures_iter = DATA_RE.captures_iter(&data);
+                        let (resource, data) = captures_iter
+                            .next()
+                            .and_then(|captures| {
+                                let resource = captures.name("resource")?.as_str();
+                                let data = captures.name("data")?.as_str();
+                                Some((resource, data))
+                            })
+                            .ok_or(ScopeError {
+                                kind: ScopeErrorKind::BadSplat as i32,
+                                source: data.to_string(),
+                                ..Default::default()
+                            })?;
+                        let bt = BlockType::parse::<Resource>(resource)?;
+                        let ck = ContextKey::from_str(data).map_err(|e| e.into_error())?;
+                        (bt, ck)
+                    };
 
-            let context_key =
-                ContextKey::with_name(data_in_context.name()).and_prefix(&dataset_name);
+                    let mut table_meta = access
+                        .backend(&backend_block)?
+                        .probe(&data_in_context)
+                        .await?
+                        .to_meta()
+                        .await?;
+
+                    table_meta.loc = Some(backend_block.clone());
+
+                    let context_key =
+                        ContextKey::with_name(data_in_context.name()).and_prefix(dataset_name);
+                    Ok((context_key, table_meta))
+                }))
+                .await;
+
+            Ok(table_metas)
+        }))
+        .await;
+
+    for result in results {
+        for inner in result? {
+            let (context_key, table_meta) = inner?;
             ctx.insert(context_key, table_meta);
         }
     }

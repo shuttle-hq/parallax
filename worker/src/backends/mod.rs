@@ -1,5 +1,7 @@
+use serde::{Deserialize, Serialize};
+
 use crate::common::*;
-use crate::node::SharedState;
+use crate::node::{BlockStore, RedisBlockStore, Shared, SharedScope, SharedState};
 use crate::opt::{
     plan::Step, Context, ContextKey, ExprMeta, MaximumFrequency, RowCount, TableMeta,
 };
@@ -39,11 +41,27 @@ macro_rules! make_probe {
             )*
         }
 
+        #[derive(Serialize, Deserialize, Clone, Debug)]
         $vis enum ProbeData {
             $($fn_output($fn_output),)*
         }
+                /// Wrapper around ProbeData which also holds a time indicating when the cache
+        /// was updated
+        #[derive(Serialize, Deserialize, Clone, Debug)]
+        struct CachedProbeData {
+            inner: ProbeData,
+            last_updated: LastUpdated
+        }
+
 
         $(
+            impl TryInto<$fn_output> for CachedProbeData {
+                type Error = Error;
+                fn try_into(self) -> Result<$fn_output> {
+                    self.inner.try_into()
+                }
+            }
+
             impl TryInto<$fn_output> for ProbeData {
                 type Error = Error;
                 fn try_into(self) -> Result<$fn_output> {
@@ -74,6 +92,7 @@ macro_rules! make_probe {
         $vis struct LazyProbe<B: ?Sized> {
             inner: Arc<B>,
             key: ContextKey,
+            cache: SharedScope<CachedProbeData>
         }
 
         impl Block for ProbeData {
@@ -120,7 +139,72 @@ macro_rules! make_probe {
                     Self: 'async_trait
                 {
                     async move {
-                        self.inner.probe(&self.key).await?.$fn_ident($($arg_name,)*).await
+                        let ty = stringify!($fn_output).to_owned();
+                        let ident = stringify!($fn_ident).to_owned();
+
+                        let mut labels = vec![];
+                        labels.push(ident);
+                        $(labels.push($arg_name.to_string());)*
+
+                        let block_type = BlockType::new(&ty, &labels);
+                        let shared_cached_probe_data: Shared<CachedProbeData> = self.cache.block(&block_type)?;
+                        let maybe_cached_probe_data: Option<CachedProbeData> = shared_cached_probe_data
+                            .read_with(|inner| inner.clone())?;
+
+                        match maybe_cached_probe_data {
+                            None => {
+                                debug!("Cache miss [{}]: <{}>", &self.key, &block_type);
+                                let mut lock = shared_cached_probe_data.write()?;
+                                let last_updated = self.inner
+                                    .probe(&self.key)
+                                    .await?
+                                    .last_updated()
+                                    .await?;
+                                let $fn_ident = self.inner
+                                    .probe(&self.key)
+                                    .await?
+                                    .$fn_ident($($arg_name,)*)
+                                    .await?;
+                                let probe_data = ProbeData::$fn_output($fn_ident.clone());
+                                let cached_probe_data = CachedProbeData {
+                                    inner: probe_data,
+                                    last_updated,
+                                };
+                                *lock = Some(cached_probe_data);
+                                if let Err(WriteError { lock, .. }) = shared_cached_probe_data.push(lock) {
+                                    unimplemented!("recover from poison")
+                                }
+                                Ok($fn_ident)
+                            }
+                            Some(cached_probe_data) => {
+                                debug!("Cache hit [{}]: <{}, {:?}>",&self.key, &block_type, cached_probe_data);
+                                let last_updated = self.inner
+                                    .probe(&self.key)
+                                    .await?
+                                    .last_updated()
+                                    .await?;
+                                if last_updated == cached_probe_data.last_updated {
+                                    debug!("Returning cached!");
+                                    return Ok(cached_probe_data.try_into()?);
+                                }
+                                let mut lock = shared_cached_probe_data.write()?;
+                                let $fn_ident = self.inner
+                                    .probe(&self.key)
+                                    .await?
+                                    .$fn_ident($($arg_name,)*)
+                                    .await?;
+                                let probe_data = ProbeData::$fn_output($fn_ident.clone());
+                                let cached_probe_data = CachedProbeData {
+                                    inner: probe_data,
+                                    last_updated,
+                                };
+                                *lock = Some(cached_probe_data);
+                                if let Err(WriteError { lock, .. }) = shared_cached_probe_data.push(lock) {
+                                    unimplemented!("recover from poison")
+                                }
+                                Ok($fn_ident)
+                            }
+                        }
                     }
                     .boxed()
                 }
@@ -156,6 +240,7 @@ pub struct LazyBackend<C, E: ?Sized> {
     from_cache: C,
     ty: BlockType,
     exec: PhantomData<E>,
+    store: Store,
 }
 
 impl<C, E> LazyBackend<C, E>
@@ -163,11 +248,12 @@ where
     C: jac::Read<Item = Result<Arc<E>>, Error = jac::redis::Error> + Send + Sync,
     E: Backend + ?Sized,
 {
-    pub fn new(from_cache: C, ty: BlockType) -> Self {
+    pub fn new(from_cache: C, ty: BlockType, store: Store) -> Self {
         Self {
             from_cache,
             ty,
             exec: PhantomData,
+            store,
         }
     }
     fn to_inner(&self) -> Result<Arc<E>> {
@@ -199,9 +285,14 @@ where
         self.to_inner()?.compute(step).await
     }
     async fn probe<'a>(&'a self, key: &'a ContextKey) -> Result<Box<dyn Probe + 'a>> {
+        let cache = SharedScope::from(RedisBlockStore::with_prefix(
+            self.store.clone(),
+            &format!("{}", key),
+        ));
         let lazy_probe = LazyProbe {
             inner: self.to_inner()?,
             key: (*key).clone(),
+            cache,
         };
         Ok(Box::new(lazy_probe))
     }
