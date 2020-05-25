@@ -178,17 +178,21 @@ where
                     job_id
                 )))?;
 
-            let state = job
-                .status
-                .ok_or(Status::internal(format!(
-                    "Job {} does not have an associated state",
-                    job_id
-                )))?
-                .state;
+            let status = job.status.ok_or(Status::internal(format!(
+                "Job {} does not have an associated state",
+                job_id
+            )))?;
 
-            match state {
+            match status.state {
                 3 => {
                     job_done = true;
+                    if let Some(err) = status.final_error {
+                        return Ok(Response::new(QueryJobResponse {
+                            arrow_schema: None,
+                            arrow_record_batches: vec![],
+                            final_error: Some(err),
+                        }));
+                    }
                 }
                 _ => {
                     // exponential backoff
@@ -230,6 +234,7 @@ where
         Ok(Response::new(QueryJobResponse {
             arrow_schema: Some(arrow_schema),
             arrow_record_batches,
+            final_error: None,
         }))
     }
     /// List all jobs

@@ -188,6 +188,7 @@ impl ExprRepr for Domain {
                         _ => Ok(arg.clone()),
                     },
                     FunctionName::Count | FunctionName::Sum => Ok(Self::Opaque),
+                    FunctionName::Concat => Ok(Self::Opaque),
                 }
             }
             Expr::Replace(Replace { with, .. }) => Ok(with.clone()),

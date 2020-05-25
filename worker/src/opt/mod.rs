@@ -429,7 +429,7 @@ impl Context<ExprMeta> {
 }
 
 impl Context<TableMeta> {
-    fn get_table(&self, key: &ContextKey) -> Result<&TableMeta, ValidateError> {
+    pub(crate) fn get_table(&self, key: &ContextKey) -> Result<&TableMeta, ValidateError> {
         self.get(key).map_err(|e| e.into_table_error())
     }
 }

@@ -202,6 +202,9 @@ impl<'a> Fetch<'a> {
                     })
                     .await?
                     .into_inner();
+                if let Some(err) = query_job_response.final_error {
+                    return Err(Error::new(err));
+                }
                 let serialized_schema: Vec<u8> = query_job_response
                     .arrow_schema
                     .ok_or(Error::msg("unexpected: did not receive output schema"))?

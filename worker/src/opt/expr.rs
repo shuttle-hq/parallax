@@ -62,6 +62,7 @@ impl<'a> TryFrom<&'a ast::Value> for LiteralValue {
                 .map_err(|_| ValidateError::InvalidLiteral(format!("number literal {}", nstr))),
             ast::Value::Boolean(b) => Ok(LiteralValue::Boolean(*b)),
             ast::Value::Null => Ok(LiteralValue::Null),
+            ast::Value::SingleQuotedString(s) => Ok(LiteralValue::StringLiteral(s.to_string())),
             _ => Err(ValidateError::Wip(format!("literal {}", value))),
         }
     }
@@ -84,6 +85,7 @@ pub enum FunctionName {
     StdDev,
     Max,
     Min,
+    Concat,
 }
 
 impl<'a> TryFrom<&'a ast::ObjectName> for FunctionName {
@@ -111,6 +113,7 @@ impl std::fmt::Display for FunctionName {
                 Self::StdDev => "STDDEV",
                 Self::Max => "MAX",
                 Self::Min => "MIN",
+                Self::Concat => "CONCAT",
             }
         )
     }
@@ -119,13 +122,14 @@ impl std::fmt::Display for FunctionName {
 impl FromStr for FunctionName {
     type Err = ValidateError;
     fn from_str(s: &str) -> ValidateResult<Self> {
-        match s {
+        match s.to_uppercase().as_ref() {
             "SUM" => Ok(FunctionName::Sum),
             "AVG" => Ok(FunctionName::Avg),
             "COUNT" => Ok(FunctionName::Count),
             "STDDEV" => Ok(FunctionName::StdDev),
             "MAX" => Ok(FunctionName::Max),
             "MIN" => Ok(FunctionName::Min),
+            "CONCAT" => Ok(FunctionName::Concat),
             _ => Err(ValidateError::InvalidFunctionName(s.to_string())),
         }
     }

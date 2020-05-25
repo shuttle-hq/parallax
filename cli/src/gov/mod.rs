@@ -249,7 +249,8 @@ pub fn read_workspace_dir(workspace_dir: &Path) -> Result<Scope> {
         .map(|path| {
             let mut buf = String::new();
             File::open(&path).and_then(|mut f| f.read_to_string(&mut buf))?;
-            let resources: Vec<Resource> = serde_yaml::from_str(&buf)?;
+            let resources: Vec<Resource> = serde_yaml::from_str(&buf)
+                .map_err(|e| Error::msg(format!("Error in {}: {}", path.as_path().display(), e)))?;
             Ok((resources, path))
         })
         .collect::<Result<Vec<_>>>()?;

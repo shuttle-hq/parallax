@@ -22,13 +22,19 @@ use crate::gcp::{
 };
 use crate::Result;
 
+use crate::opt::expr::Expr;
+use crate::opt::expr::ExprTree;
 use crate::opt::{
-    plan::Step, rel::*, Context, ContextError, ContextKey, DataType, Domain, ExprMeta, Mode,
-    RelAnsatz, ToAnsatz, ValidateError, ValidateResult,
+    plan::Step, rel::*, CompositionError, Context, ContextError, ContextKey, DataType, Domain,
+    ExprAnsatz, ExprMeta, ExprT, HashAlgorithm, Mode, RelAnsatz, ToAnsatz, ValidateError,
+    ValidateResult,
 };
+use sqlparser::ast::Value::SingleQuotedString;
 
 mod probe;
+
 use probe::BigQueryProbe;
+use sqlparser::ast;
 
 pub struct ExprExtraMeta {
     min: String,
@@ -199,7 +205,7 @@ where
 
     pub(self) fn job_builder(&self) -> JobBuilder {
         let mut builder = JobBuilder::default();
-        builder.project_id(&self.staging.project_id);
+        builder.project_id(&self.dataset.project_id);
         builder
     }
 }
@@ -224,14 +230,21 @@ where
             .collect::<Result<_>>()?;
 
         let rel_t = BigQueryRelT::wrap(step.rel_t, &ctx);
-        let query: sqlparser::ast::Query = rel_t.to_ansatz()?.into();
+        let query: sqlparser::ast::Query = rel_t
+            .to_ansatz()
+            .map_err(|compositon_err| BackendError {
+                kind: BackendErrorKind::Unknown as i32,
+                source: "BigQuery".to_string(),
+                description: compositon_err.to_string(),
+            })?
+            .into();
         let query_str = query.to_string();
 
         let output = self.in_staging(&step.promise)?;
 
         let mut builder = JobBuilder::default();
         builder
-            .project_id(&self.staging.project_id.clone())
+            .project_id(&self.dataset.project_id.clone())
             .query(&query_str, output);
         let job_request = builder.build()?;
         self.big_query.run_to_completion(job_request).await?;
@@ -297,21 +310,68 @@ impl<'a> BigQueryRelT<'a> {
         Self { ctx, root }
     }
 
-    fn to_ansatz(self) -> std::result::Result<RelAnsatz, ContextError> {
+    fn to_ansatz(self) -> std::result::Result<RelAnsatz, CompositionError> {
         let ctx = self.ctx;
         self.root.try_fold(&mut |t| {
-            match t {
-                Rel::Table(Table(key)) => {
-                    ctx.get(&key)
-                        .map(|loc| {
-                            let as_ctx_key = table_ref_to_context_key(loc);
-                            Rel::Table(Table(as_ctx_key))
-                        })
-                        .map(|t| t.to_ansatz().unwrap()) // FIXMEs
-                }
-                _ => Ok(t.to_ansatz().unwrap()),
-            }
+            t.map_expressions(&|expr_t| BigQueryExprT::wrap(expr_t.clone()))
+                .to_ansatz()
         })
+    }
+}
+
+pub struct BigQueryExprT {
+    root: ExprT,
+}
+
+impl BigQueryExprT {
+    fn expr_ansatz(node: Expr<ExprAnsatz>) -> std::result::Result<ExprAnsatz, CompositionError> {
+        match node {
+            Expr::Hash(crate::opt::expr::Hash { algo, expr, salt }) => {
+                let salt_literal = ast::Expr::Value(SingleQuotedString(base64::encode(&salt)));
+
+                let ast_expr = expr.into();
+
+                let concat = ast::Expr::Function(ast::Function {
+                    name: ast::ObjectName(vec!["CONCAT".to_string()]),
+                    args: vec![salt_literal, ast_expr],
+                    over: None,
+                    distinct: false,
+                });
+
+                let bq_algo = match algo {
+                    HashAlgorithm::SHA256 => "SHA256".to_string(),
+                };
+
+                let hash = ast::Expr::Function(ast::Function {
+                    name: ast::ObjectName(vec![bq_algo]),
+                    args: vec![concat],
+                    over: None,
+                    distinct: false,
+                });
+
+                let base_64_wrapper = ast::Expr::Function(ast::Function {
+                    name: ast::ObjectName(vec!["TO_BASE64".to_string()]),
+                    args: vec![hash],
+                    over: None,
+                    distinct: false,
+                });
+                Ok(ExprAnsatz::Expr(base_64_wrapper))
+            }
+            _ => node.to_ansatz(),
+        }
+    }
+}
+
+impl ToAnsatz for BigQueryExprT {
+    type Ansatz = ExprAnsatz;
+
+    fn to_ansatz(self) -> std::result::Result<Self::Ansatz, CompositionError> {
+        self.root.try_fold(&mut |root| Self::expr_ansatz(root))
+    }
+}
+impl BigQueryExprT {
+    fn wrap(root: ExprT) -> Self {
+        Self { root }
     }
 }
 
@@ -474,7 +534,7 @@ pub mod tests {
                 Domain::Discrete {
                     max: 8348,
                     min: 3,
-                    step: 1
+                    step: 1,
                 }
             );
         });

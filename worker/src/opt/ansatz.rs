@@ -7,6 +7,7 @@ macro_rules! ansatz {
         $id:ident:
         $($f:ident($o:path),)*
     ) => {
+        #[derive(Clone)]
         pub enum $id {
             $($f($o),)*
         }
@@ -147,4 +148,12 @@ pub trait ToAnsatz {
 #[derive(Debug, Clone)]
 pub enum CompositionError {
     Unimplemented,
+}
+
+impl std::fmt::Display for CompositionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unimplemented => write!(f, "Unimplemented"),
+        }
+    }
 }

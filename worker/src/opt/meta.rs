@@ -199,6 +199,10 @@ impl ExprRepr for DataType {
                                 error!(InvalidType, "numeric type", fst)
                             }
                         }
+                        FunctionName::Concat => match fst {
+                            DataType::String => Ok(DataType::String),
+                            _ => error!(InvalidType, "string type", fst),
+                        },
                     }
                 } else {
                     error!(Expected, "all arguments of functions to have the same type")

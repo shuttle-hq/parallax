@@ -58,10 +58,13 @@ impl ExprTransform for HashPolicy {
         match expr.as_ref() {
             Expr::Column(Column(context_key)) => {
                 if matches_in(self.fields.iter(), &context_key)? {
-                    Ok(ExprT::from(Expr::Hash(Hash {
-                        algo: HashAlgorithm::default(),
-                        expr: expr.clone(),
-                        salt: self.salt.clone(),
+                    Ok(ExprT::from(Expr::As(As {
+                        expr: ExprT::from(Expr::Hash(Hash {
+                            algo: HashAlgorithm::default(),
+                            expr: expr.clone(),
+                            salt: self.salt.clone(),
+                        })),
+                        alias: context_key.name().to_string(),
                     }))
                     .into())
                 } else {
@@ -722,13 +725,18 @@ pub mod tests {
             .audience
             .contains(&block_type!("resource"."group"."group1")));
 
+        println!("{:#?}", rel_t.root);
+
         match rel_t.root {
             Rel::Projection(Projection { attributes, .. }) => {
                 match attributes[0]
                     .as_ref()
                     .map_owned(&mut |child| child.as_ref())
                 {
-                    Expr::Hash(..) => {}
+                    Expr::As(As { expr, .. }) => match expr {
+                        Expr::Hash(..) => {}
+                        _ => panic!("`user_id` was not hashed"),
+                    },
                     _ => panic!("`user_id` was not hashed"),
                 }
             }

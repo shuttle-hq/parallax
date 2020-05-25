@@ -68,6 +68,7 @@ message QueryJobRequest {
 message QueryJobResponse {
   ArrowSchema arrow_schema = 1;
   repeated ArrowRecordBatch arrow_record_batches = 2;
+  type.error.v1.Error final_error = 3;
 }
 
 message GetJobOutputSchemaRequest {
