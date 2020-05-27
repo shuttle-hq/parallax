@@ -656,7 +656,7 @@ pub mod tests {
     fn transform_blocked() {
         let rel_t = test_transform_for(
             "\
-            SELECT city FROM yelp.business
+            SELECT city FROM test_data.business
             ",
         )
         .into_inner();
@@ -668,7 +668,7 @@ pub mod tests {
     fn transform_whitelist() {
         let rel_t = test_transform_for(
             "\
-            SELECT business_id FROM yelp.business
+            SELECT business_id FROM test_data.business
             ",
         )
         .into_inner();
@@ -684,7 +684,7 @@ pub mod tests {
     fn transform_obfuscation() {
         let rel_t = test_transform_for(
             "\
-            SELECT review_id FROM yelp.review
+            SELECT review_id FROM test_data.review
             ",
         )
         .into_inner();
@@ -715,7 +715,7 @@ pub mod tests {
     fn transform_hash() {
         let rel_t = test_transform_for(
             "\
-            SELECT user_id FROM yelp.review
+            SELECT user_id FROM test_data.review
             ",
         )
         .into_inner();
@@ -749,7 +749,7 @@ pub mod tests {
         let rel_t = test_transform_for(
             "\
             SELECT business_id, COUNT(funny) \
-            FROM yelp.review \
+            FROM test_data.review \
             GROUP BY business_id
             ",
         );

@@ -386,7 +386,7 @@ mod tests {
     fn query_rpc_query_job() {
         test_query_rpc(async move |mut client| {
             let job = Job {
-                query: "SELECT business_id FROM yelp.business".to_string(),
+                query: "SELECT business_id FROM test_data.business".to_string(),
                 ..Default::default()
             };
             let req = mk_req(QueryJobRequest {
@@ -412,7 +412,7 @@ mod tests {
     fn query_rpc_query_job_timeout_exceeded() {
         test_query_rpc(async move |mut client| {
             let job = Job {
-                query: "SELECT business_id FROM yelp.business".to_string(),
+                query: "SELECT business_id FROM test_data.business".to_string(),
                 ..Default::default()
             };
             let req = mk_req(QueryJobRequest {
@@ -459,7 +459,7 @@ mod tests {
     fn query_rpc_insert_job_and_list() {
         test_query_rpc(async move |mut client| {
             let job = Job {
-                query: "SELECT business_id FROM yelp.business".to_string(),
+                query: "SELECT business_id FROM test_data.business".to_string(),
                 ..Default::default()
             };
             let req = mk_req(InsertJobRequest {
@@ -490,7 +490,7 @@ mod tests {
     fn query_rpc_insert_job_and_it_completes() {
         let job = insert_job_and_get(
             "SELECT business_id, COUNT(funny) \
-             FROM yelp.review \
+             FROM test_data.review \
              GROUP BY business_id",
         );
         println!("{:#?}", job);
@@ -501,7 +501,7 @@ mod tests {
 
     #[test]
     fn query_rpc_insert_job_but_it_is_forbidden() {
-        let job = insert_job_and_get("SELECT * FROM yelp.business");
+        let job = insert_job_and_get("SELECT * FROM test_data.business");
         let status = job.status.unwrap();
         assert_eq!(status.state, JobState::Done as i32);
         assert!(status.final_error.is_some());

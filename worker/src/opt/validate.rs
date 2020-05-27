@@ -464,13 +464,13 @@ pub mod tests {
             "SELECT business_id as business_id, COUNT(DISTINCT user_id) \
              FROM (\
                SELECT business_id as business_id, user_id as user_id \
-               FROM yelp.review\
+               FROM test_data.review\
              )\
              GROUP BY business_id",
         );
         let mut new_ctx = get_context();
         let review_meta = new_ctx
-            .get_mut(&ContextKey::with_name("review").and_prefix("yelp"))
+            .get_mut(&ContextKey::with_name("review").and_prefix("test_data"))
             .unwrap();
         let business_id_meta = review_meta
             .columns
@@ -508,7 +508,7 @@ pub mod tests {
 
     #[test]
     fn validate_username_is_a_string() {
-        let rel_t = test_validate_for("SELECT user_id FROM yelp.review");
+        let rel_t = test_validate_for("SELECT user_id FROM test_data.review");
         let table_meta = rel_t.board.unwrap();
         let expr_ctx = table_meta.to_context();
         let expr_meta = expr_ctx.get(&"f0_".parse().unwrap()).unwrap();
@@ -521,7 +521,7 @@ pub mod tests {
         let rel_t = test_validate_for(
             "\
             SELECT categories, AVG(review_count) \
-            FROM yelp.business \
+            FROM test_data.business \
             GROUP BY categories",
         );
         let table_meta = rel_t.board.unwrap();
@@ -532,7 +532,7 @@ pub mod tests {
 
     #[test]
     fn validate_alias() {
-        let rel_t = test_validate_for("SELECT user_id AS username FROM yelp.review");
+        let rel_t = test_validate_for("SELECT user_id AS username FROM test_data.review");
         let expr_ctx = rel_t.board.unwrap().to_context();
         expr_ctx.get(&"username".parse().unwrap()).unwrap();
     }
@@ -542,8 +542,8 @@ pub mod tests {
         let rel_t = test_validate_for(
             "\
             SELECT a.name, MAX(b.useful - b.funny)
-            FROM yelp.business AS a
-            JOIN yelp.review AS b
+            FROM test_data.business AS a
+            JOIN test_data.review AS b
             ON a.business_id = b.business_id
             GROUP BY a.name
             ",

@@ -29,7 +29,7 @@
       staging_dataset_id: "cache"
 
 - dataset:
-    name: "yelp"
+    name: "test_data"
     data:
     - resource.backend.big_query.a_bigquery_backend.data["review"]
     - resource.backend.big_query.a_bigquery_backend.data["business"]

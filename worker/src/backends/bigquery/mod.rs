@@ -310,11 +310,23 @@ impl<'a> BigQueryRelT<'a> {
         Self { ctx, root }
     }
 
-    fn to_ansatz(self) -> std::result::Result<RelAnsatz, CompositionError> {
+    fn to_ansatz(self) -> std::result::Result<RelAnsatz, String> {
         let ctx = self.ctx;
-        self.root.try_fold(&mut |t| {
-            t.map_expressions(&|expr_t| BigQueryExprT::wrap(expr_t.clone()))
+        // Hotfix (FIXME): will not work if self.root is sole leaf
+        self.root.try_fold(&mut |child| match child {
+            GenericRel::Table(Table(key)) => {
+                let table_ref = ctx
+                    .get(&key)
+                    .map_err(|e| e.into_table_error().to_string())?;
+                let bq_key = table_ref_to_context_key(&table_ref);
+                Ok(GenericRel::<ExprT, RelAnsatz>::Table(Table(bq_key))
+                    .to_ansatz()
+                    .unwrap())
+            }
+            child => child
+                .map_expressions(&|expr_t| BigQueryExprT::wrap(expr_t.clone()))
                 .to_ansatz()
+                .map_err(|e| e.to_string()),
         })
     }
 }

@@ -422,7 +422,7 @@ pub mod tests {
     #[test]
     fn simple_rebase_to_flex_query() {
         let rebased = rebase_query_to_flex_meta(
-            "SELECT COUNT(DISTINCT user_id), MAX(stars) FROM yelp.review",
+            "SELECT COUNT(DISTINCT user_id), MAX(stars) FROM test_data.review",
         );
         let flex_meta = rebased.board.unwrap();
         assert_eq!(flex_meta.row_count.0, Some(6685900));
