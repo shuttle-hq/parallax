@@ -386,7 +386,7 @@ mod tests {
     fn query_rpc_query_job() {
         test_query_rpc(async move |mut client| {
             let job = Job {
-                query: "SELECT business_id FROM test_data.business".to_string(),
+                query: "SELECT vocabulary_id FROM patient_data.vocabulary".to_string(),
                 ..Default::default()
             };
             let req = mk_req(QueryJobRequest {
@@ -412,7 +412,7 @@ mod tests {
     fn query_rpc_query_job_timeout_exceeded() {
         test_query_rpc(async move |mut client| {
             let job = Job {
-                query: "SELECT business_id FROM test_data.business".to_string(),
+                query: "SELECT vocabulary_id FROM patient_data.vocabulary".to_string(),
                 ..Default::default()
             };
             let req = mk_req(QueryJobRequest {
@@ -459,7 +459,7 @@ mod tests {
     fn query_rpc_insert_job_and_list() {
         test_query_rpc(async move |mut client| {
             let job = Job {
-                query: "SELECT business_id FROM test_data.business".to_string(),
+                query: "SELECT vocabulary_id FROM patient_data.vocabulary".to_string(),
                 ..Default::default()
             };
             let req = mk_req(InsertJobRequest {
@@ -489,11 +489,10 @@ mod tests {
     #[test]
     fn query_rpc_insert_job_and_it_completes() {
         let job = insert_job_and_get(
-            "SELECT business_id, COUNT(funny) \
-             FROM test_data.review \
-             GROUP BY business_id",
+            "SELECT race_concept_id, COUNT(person_id) \
+             FROM patient_data.person \
+             GROUP BY race_concept_id",
         );
-        println!("{:#?}", job);
         let status = job.status.unwrap();
         assert_eq!(status.state, JobState::Done as i32);
         assert!(status.final_error.is_none());
@@ -501,7 +500,7 @@ mod tests {
 
     #[test]
     fn query_rpc_insert_job_but_it_is_forbidden() {
-        let job = insert_job_and_get("SELECT * FROM test_data.business");
+        let job = insert_job_and_get("SELECT * FROM patient_data.person");
         let status = job.status.unwrap();
         assert_eq!(status.state, JobState::Done as i32);
         assert!(status.final_error.is_some());

@@ -315,9 +315,14 @@ where
             .as_ref()
             .ok_or(Error::new("table does not have a source key"))?;
 
+        debug!("acquiring a probe for {}", source);
         let probe = backend.probe(source).await?;
 
         let primary_key = &ContextKey::with_name(&self.primary);
+        debug!(
+            "acquiring maximum_frequency and row_count for {}",
+            primary_key
+        );
         let (maximum_frequency, row_count) =
             try_join!(probe.maximum_frequency(&primary_key), probe.row_count())?;
 
@@ -327,37 +332,45 @@ where
         };
 
         let access = self.access;
+        let probe_ref = &probe;
 
         let mut columns = Context::new();
-        let columns_with_meta: Vec<crate::Result<_>> =
+        let columns_with_meta: Vec<(_, crate::Result<_>)> =
             future::join_all(table_meta.columns.iter().map(
                 async move |(column, previous_meta)| {
-                    let backend = access.backend(loc)?;
-                    let probe = backend.probe(source).await?;
-                    let domain = probe.domain(column).await?;
-                    let maximum_frequency = maximum_frequency.clone();
-                    let sensitivity = domain.to_sensitivity();
+                    let meta = try {
+                        debug!("acquiring domain for {}", column);
+                        let domain = probe_ref.domain(column).await?;
 
-                    let domain_sensitivity = DomainSensitivity {
-                        domain,
-                        sensitivity,
-                        maximum_frequency,
+                        let maximum_frequency = maximum_frequency.clone();
+                        let sensitivity = domain.to_sensitivity();
+
+                        let domain_sensitivity = DomainSensitivity {
+                            domain,
+                            sensitivity,
+                            maximum_frequency,
+                        };
+
+                        let taint = column.matches(primary_key).into();
+
+                        FlexExprMeta {
+                            domain_sensitivity,
+                            taint,
+                        }
                     };
-
-                    let taint = column.matches(primary_key).into();
-
-                    let meta = FlexExprMeta {
-                        domain_sensitivity,
-                        taint,
-                    };
-                    Ok((column.clone(), meta))
+                    (column.clone(), meta)
                 },
             ))
             .await;
 
-        for column_with_meta in columns_with_meta {
-            let (column, meta) = column_with_meta?;
-            columns.insert(column, meta);
+        for (column, meta) in columns_with_meta {
+            match meta {
+                Ok(meta) => columns.insert(column, meta),
+                Err(err) => {
+                    debug!("failed to build flex meta for \"{}\": {}", column, err);
+                    return Err(err);
+                }
+            }
         }
 
         Ok(FlexTableMeta {
@@ -371,9 +384,7 @@ where
             async move |table_meta, ctx_key| {
                 self.get(table_meta)
                     .await
-                    .map_err(|e| ValidateError::Wip(
-                        "something mysterious happened".to_string()
-                    ))
+                    .map_err(|err| ValidateError::Internal(err.to_string()))
             }
         })
         .await
@@ -403,7 +414,7 @@ pub mod tests {
             let rel_t = validator.validate_str(query_str).unwrap();
             let getter = FlexTableMetaGetter {
                 access: &access,
-                primary: "user_id".to_string(),
+                primary: "person_id".to_string(),
             };
             let getter_ref = &getter;
             let rebase_fut = rebase_closure!(
@@ -422,11 +433,11 @@ pub mod tests {
     #[test]
     fn simple_rebase_to_flex_query() {
         let rebased = rebase_query_to_flex_meta(
-            "SELECT COUNT(DISTINCT user_id), MAX(stars) FROM test_data.review",
+            "SELECT COUNT(DISTINCT person_id), MAX(year_of_birth) FROM patient_data.person",
         );
         let flex_meta = rebased.board.unwrap();
-        assert_eq!(flex_meta.row_count.0, Some(6685900));
-        assert_eq!(flex_meta.primary.maximum_frequency.0, Some(4129));
+        assert_eq!(flex_meta.row_count.0, Some(2326856));
+        assert_eq!(flex_meta.primary.maximum_frequency.0, Some(1));
         assert_eq!(
             *flex_meta
                 .columns
@@ -436,7 +447,7 @@ pub mod tests {
                 domain_sensitivity: DomainSensitivity {
                     domain: Domain::Opaque,
                     sensitivity: Sensitivity(Some(1.0,),),
-                    maximum_frequency: MaximumFrequency(Some(4129,),),
+                    maximum_frequency: MaximumFrequency(Some(1,),),
                 },
                 taint: true.into(),
             }
@@ -448,11 +459,15 @@ pub mod tests {
                 .unwrap(),
             FlexExprMeta {
                 domain_sensitivity: DomainSensitivity {
-                    domain: Domain::Continuous { min: 1.0, max: 5.0 },
-                    sensitivity: Sensitivity(None,),
-                    maximum_frequency: MaximumFrequency(Some(4129,),),
+                    domain: Domain::Discrete {
+                        max: 1983,
+                        min: 1909,
+                        step: 1
+                    },
+                    sensitivity: Sensitivity(None),
+                    maximum_frequency: MaximumFrequency(Some(1))
                 },
-                taint: false.into()
+                taint: Taint(false)
             }
         );
     }

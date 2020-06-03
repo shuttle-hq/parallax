@@ -8,6 +8,6 @@ RUN apt-get update && \
             openssl \
             curl
 
-COPY parallax/target/${TARGET}/parallax-worker /usr/bin/parallax-worker
+COPY target/${TARGET}/parallax-worker /usr/bin/parallax-worker
 
 ENTRYPOINT [ "/usr/bin/parallax-worker" ]

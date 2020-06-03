@@ -461,22 +461,23 @@ pub mod tests {
     #[test]
     fn rebase_relation_tree() {
         let original_tree = test_validate_for(
-            "SELECT business_id as business_id, COUNT(DISTINCT user_id) \
+            "SELECT ethnicity_concept_id as ethnicity_concept_id, \
+                     COUNT(DISTINCT person_id) \
              FROM (\
-               SELECT business_id as business_id, user_id as user_id \
-               FROM test_data.review\
+               SELECT ethnicity_concept_id as ethnicity_concept_id, person_id as person_id \
+               FROM patient_data.person \
              )\
-             GROUP BY business_id",
+             GROUP BY ethnicity_concept_id",
         );
         let mut new_ctx = get_context();
-        let review_meta = new_ctx
-            .get_mut(&ContextKey::with_name("review").and_prefix("test_data"))
+        let person_meta = new_ctx
+            .get_mut(&ContextKey::with_name("person").and_prefix("patient_data"))
             .unwrap();
-        let business_id_meta = review_meta
+        let ethn_id_meta = person_meta
             .columns
-            .get_mut(&ContextKey::with_name("business_id"))
+            .get_mut(&ContextKey::with_name("ethnicity_concept_id"))
             .unwrap();
-        business_id_meta.ty = DataType::Integer;
+        ethn_id_meta.ty = DataType::Integer;
         let new_ctx_ref = &new_ctx;
         let rebase_fut = rebase_closure!(original_tree => TableMeta -> TableMeta {
             async move |_, key| {
@@ -492,7 +493,7 @@ pub mod tests {
                 .board
                 .unwrap()
                 .columns
-                .get(&ContextKey::with_name("business_id"))
+                .get(&ContextKey::with_name("ethnicity_concept_id"))
                 .unwrap()
                 .ty,
             DataType::Integer
@@ -507,45 +508,36 @@ pub mod tests {
     }
 
     #[test]
-    fn validate_username_is_a_string() {
-        let rel_t = test_validate_for("SELECT user_id FROM test_data.review");
-        let table_meta = rel_t.board.unwrap();
-        let expr_ctx = table_meta.to_context();
-        let expr_meta = expr_ctx.get(&"f0_".parse().unwrap()).unwrap();
-        assert_eq!(expr_meta.ty, DataType::String)
-    }
-
-    #[test]
     fn validate_group_by() {
         crate::tests::setup_test();
         let rel_t = test_validate_for(
             "\
-            SELECT categories, AVG(review_count) \
-            FROM test_data.business \
-            GROUP BY categories",
+            SELECT race_concept_id, COUNT(person_id) \
+            FROM patient_data.person \
+            GROUP BY race_concept_id",
         );
         let table_meta = rel_t.board.unwrap();
         let expr_ctx = table_meta.to_context();
         let expr_meta = expr_ctx.get(&"f1_".parse().unwrap()).unwrap();
-        assert_eq!(expr_meta.ty, DataType::Float)
+        assert_eq!(expr_meta.ty, DataType::Integer)
     }
 
     #[test]
     fn validate_alias() {
-        let rel_t = test_validate_for("SELECT user_id AS username FROM test_data.review");
+        let rel_t = test_validate_for("SELECT person_id AS person FROM patient_data.person");
         let expr_ctx = rel_t.board.unwrap().to_context();
-        expr_ctx.get(&"username".parse().unwrap()).unwrap();
+        expr_ctx.get(&"person".parse().unwrap()).unwrap();
     }
 
     #[test]
     fn validate_join() {
         let rel_t = test_validate_for(
             "\
-            SELECT a.name, MAX(b.useful - b.funny)
-            FROM test_data.business AS a
-            JOIN test_data.review AS b
-            ON a.business_id = b.business_id
-            GROUP BY a.name
+            SELECT a.race_concept_id, COUNT(DISTINCT a.person_id)
+            FROM patient_data.person AS a
+            JOIN patient_data.location AS b
+            ON a.location_id = b.location_id
+            GROUP BY a.race_concept_id
             ",
         );
         let expr_meta = rel_t.board.unwrap().to_context();

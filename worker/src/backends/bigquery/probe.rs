@@ -188,7 +188,7 @@ where
                     _ => unreachable!(),
                 }
             };
-            domain.ok_or(Error::new("invalid response from BigQuery"))
+            Ok(domain.unwrap_or(Domain::Opaque))
         } else {
             Ok(Domain::Opaque)
         }
@@ -222,7 +222,7 @@ where
         let results = self.inner.lite_query(&query_str).await?;
 
         debug!(
-            "Time taken for last_updated: {}ms",
+            "time taken for last_updated: {}ms",
             t.elapsed().unwrap().as_millis()
         );
 

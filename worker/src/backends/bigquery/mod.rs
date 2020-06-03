@@ -198,14 +198,14 @@ where
 
     async fn lite_query(&self, query_str: &str) -> Result<GetQueryResultsResponse> {
         self.to_inner()
-            .lite_query(query_str, &self.dataset.project_id)
+            .lite_query(query_str, &self.staging.project_id)
             .await
             .map_err(|e| e.into())
     }
 
     pub(self) fn job_builder(&self) -> JobBuilder {
         let mut builder = JobBuilder::default();
-        builder.project_id(&self.dataset.project_id);
+        builder.project_id(&self.staging.project_id);
         builder
     }
 }
@@ -244,7 +244,7 @@ where
 
         let mut builder = JobBuilder::default();
         builder
-            .project_id(&self.dataset.project_id.clone())
+            .project_id(&self.staging.project_id.clone())
             .query(&query_str, output);
         let job_request = builder.build()?;
         self.big_query.run_to_completion(job_request).await?;

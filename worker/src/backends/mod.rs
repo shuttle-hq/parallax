@@ -153,8 +153,7 @@ macro_rules! make_probe {
 
                         match maybe_cached_probe_data {
                             None => {
-                                debug!("Cache miss [{}]: <{}>", &self.key, &block_type);
-                                let mut lock = shared_cached_probe_data.write()?;
+                                debug!("cache miss scope={} block_type={}", &self.key, &block_type);
                                 let last_updated = self.inner
                                     .probe(&self.key)
                                     .await?
@@ -170,6 +169,8 @@ macro_rules! make_probe {
                                     inner: probe_data,
                                     last_updated,
                                 };
+
+                                let mut lock = shared_cached_probe_data.write()?;
                                 *lock = Some(cached_probe_data);
                                 if let Err(WriteError { lock, .. }) = shared_cached_probe_data.push(lock) {
                                     unimplemented!("recover from poison")
@@ -177,17 +178,21 @@ macro_rules! make_probe {
                                 Ok($fn_ident)
                             }
                             Some(cached_probe_data) => {
-                                debug!("Cache hit [{}]: <{}, {:?}>",&self.key, &block_type, cached_probe_data);
+                                debug!(
+                                    "cache hit scope={} block_type={}, data={:?}",
+                                    &self.key,
+                                    &block_type,
+                                    cached_probe_data
+                                );
                                 let last_updated = self.inner
                                     .probe(&self.key)
                                     .await?
                                     .last_updated()
                                     .await?;
                                 if last_updated == cached_probe_data.last_updated {
-                                    debug!("Returning cached!");
+                                    debug!("returning cached");
                                     return Ok(cached_probe_data.try_into()?);
                                 }
-                                let mut lock = shared_cached_probe_data.write()?;
                                 let $fn_ident = self.inner
                                     .probe(&self.key)
                                     .await?
@@ -198,6 +203,8 @@ macro_rules! make_probe {
                                     inner: probe_data,
                                     last_updated,
                                 };
+
+                                let mut lock = shared_cached_probe_data.write()?;
                                 *lock = Some(cached_probe_data);
                                 if let Err(WriteError { lock, .. }) = shared_cached_probe_data.push(lock) {
                                     unimplemented!("recover from poison")

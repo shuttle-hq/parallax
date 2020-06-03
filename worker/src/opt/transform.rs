@@ -124,7 +124,8 @@ impl RelTransform for DifferentialPrivacyPolicy {
                 };
                 let flex = getter.rebase(rel).await;
 
-                if let Err(_) = flex.board.as_ref() {
+                if let Err(err) = flex.board.as_ref() {
+                    trace!("rebase lead to incorrect tree, dropping match: {}", err);
                     return Err(Error::NoMatch);
                 }
 
@@ -636,9 +637,9 @@ pub mod tests {
         Runtime::new().unwrap().block_on(async {
             let ctx = access.context().await.unwrap();
             let validator = Validator::new(&ctx);
-            let policies = access.policies_for_group("group1").unwrap();
+            let policies = access.policies_for_group("wheel").unwrap();
             let rel_t = validator.validate_str(query).unwrap();
-            let audience = block_type!("resource"."group"."group1");
+            let audience = block_type!("resource"."group"."wheel");
             let transformer = RelTransformer::new(&policies, &audience, &access);
             let rel_t = transformer
                 .transform_rel(&rel_t)
@@ -656,7 +657,7 @@ pub mod tests {
     fn transform_blocked() {
         let rel_t = test_transform_for(
             "\
-            SELECT city FROM test_data.business
+            SELECT person_id FROM patient_data.person
             ",
         )
         .into_inner();
@@ -668,14 +669,14 @@ pub mod tests {
     fn transform_whitelist() {
         let rel_t = test_transform_for(
             "\
-            SELECT business_id FROM test_data.business
+            SELECT vocabulary_id FROM patient_data.vocabulary
             ",
         )
         .into_inner();
         let table_meta = rel_t.board.unwrap();
         assert!(table_meta
             .audience
-            .contains(&block_type!("resource"."group"."group1")))
+            .contains(&block_type!("resource"."group"."wheel")))
     }
 
     use crate::opt::expr::As;
@@ -684,7 +685,7 @@ pub mod tests {
     fn transform_obfuscation() {
         let rel_t = test_transform_for(
             "\
-            SELECT review_id FROM test_data.review
+            SELECT address_1 FROM patient_data.location
             ",
         )
         .into_inner();
@@ -692,7 +693,7 @@ pub mod tests {
         let table_meta = rel_t.board.unwrap();
         assert!(table_meta
             .audience
-            .contains(&block_type!("resource"."group"."group1")));
+            .contains(&block_type!("resource"."group"."wheel")));
 
         match rel_t.root {
             Rel::Projection(Projection { attributes, .. }) => {
@@ -703,7 +704,7 @@ pub mod tests {
                     Expr::As(As {
                         expr: Expr::Literal(Literal(LiteralValue::Null)),
                         alias,
-                    }) => assert_eq!(alias, "review_id".to_string()),
+                    }) => assert_eq!(alias, "address_1".to_string()),
                     _ => panic!("`review_id` was not obfuscated"),
                 }
             }
@@ -715,7 +716,7 @@ pub mod tests {
     fn transform_hash() {
         let rel_t = test_transform_for(
             "\
-            SELECT user_id FROM test_data.review
+            SELECT care_site_name FROM patient_data.care_site
             ",
         )
         .into_inner();
@@ -723,9 +724,7 @@ pub mod tests {
         let table_meta = rel_t.board.unwrap();
         assert!(table_meta
             .audience
-            .contains(&block_type!("resource"."group"."group1")));
-
-        println!("{:#?}", rel_t.root);
+            .contains(&block_type!("resource"."group"."wheel")));
 
         match rel_t.root {
             Rel::Projection(Projection { attributes, .. }) => {
@@ -735,9 +734,9 @@ pub mod tests {
                 {
                     Expr::As(As { expr, .. }) => match expr {
                         Expr::Hash(..) => {}
-                        _ => panic!("`user_id` was not hashed"),
+                        _ => panic!("`care_site_name` was not hashed"),
                     },
-                    _ => panic!("`user_id` was not hashed"),
+                    _ => panic!("`care_site_name` was not hashed"),
                 }
             }
             _ => unreachable!(),
@@ -748,11 +747,13 @@ pub mod tests {
     fn transform_diff_priv() {
         let rel_t = test_transform_for(
             "\
-            SELECT business_id, COUNT(funny) \
-            FROM test_data.review \
-            GROUP BY business_id
+            SELECT gender_concept_id, COUNT(person_id) \
+            FROM patient_data.person \
+            GROUP BY gender_concept_id
             ",
         );
-        println!("{:#?}", rel_t);
+        // For now this is enough in order to check that diff priv was triggered
+        // as it is the only policy with an associated cost
+        assert!(*rel_t.cost.values().next().unwrap() > 0f64);
     }
 }
