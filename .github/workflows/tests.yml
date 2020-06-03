@@ -1,0 +1,105 @@
+name: parallax tests
+
+on:
+  push:
+    branches:
+    - master
+  pull_request: {}
+
+jobs:
+  parallax_cargo_test:
+    runs-on: ubuntu-latest
+    env:
+      toolchain: "nightly-2020-05-15"
+    steps:
+    - name: Install Protoc
+      uses: arduino/setup-protoc@master
+    - uses: actions/checkout@v2
+      with:
+        submodules: "recursive"
+    - name: Install nightly
+      run: rustup toolchain install ${{ env.toolchain }}
+    - name: Install rustfmt
+      run: rustup component add rustfmt --toolchain ${{ env.toolchain }}
+    - name: Check Parallax format
+      run: cargo fmt -- --check
+    - name: Check BigQuery-Storage format
+      working-directory: ./bigquery-storage
+      run: cargo fmt -- --check
+    - name: Launch redis
+      run: docker run -d -p 6379:6379 --rm redis
+    - name: Prepare secrets
+      env:
+        UNIT_TESTER_SA: ${{ secrets.OPENQUERY_UNIT_TESTER_SERVICE_ACCOUNT_KEY }}
+      run: |
+        mkdir secret
+        echo "$UNIT_TESTER_SA" > secret/unit-tester.json
+    - name: Run worker tests
+      working-directory: ./worker
+      env:
+        PARALLAX_GCP_SERVICE_ACCOUNT_KEY: "../secret/unit-tester.json"
+      run: cargo +${{ env.toolchain }} test
+    - name: Run cli tests
+      working-directory: ./cli
+      run: cargo +${{ env.toolchain }} test
+  parallax_cli_tests_macos:
+    runs-on: macos-latest
+    env:
+      toolchain: "nightly-2020-05-15"
+    steps:
+    - name: Install Protoc
+      uses: arduino/setup-protoc@v1.1.0
+      with:
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+    - uses: actions/checkout@v2
+      with:
+        submodules: "recursive"
+    - name: Install nightly
+      run: rustup toolchain install ${{ env.toolchain }}
+    - name: Install rustfmt
+      run: rustup component add rustfmt --toolchain ${{ env.toolchain }}
+    - name: Run cli tests
+      working-directory: ./cli
+      env:
+        SSH_AUTH_SOCK: /tmp/ssh_agent.sock
+      run: cargo +${{ env.toolchain }} test
+  parallax_cli_integration_tests:
+    runs-on: ubuntu-latest
+    env:
+      toolchain: "nightly-2020-05-15"
+    steps:
+    - name: Install Protoc
+      uses: arduino/setup-protoc@master
+    - uses: actions/checkout@v2
+      with:
+        submodules: "recursive"
+    - name: Install nightly
+      run: rustup toolchain install ${{ env.toolchain }}
+    - name: Install rustfmt
+      run: rustup component add rustfmt --toolchain ${{ env.toolchain }}
+    - name: Launch redis
+      run: docker run -d -p 6379:6379 --rm redis
+    - name: Prepare secrets
+      env:
+        UNIT_TESTER_SA: ${{ secrets.OPENQUERY_UNIT_TESTER_SERVICE_ACCOUNT_KEY }}
+      run: |
+          mkdir secret
+          echo "$UNIT_TESTER_SA" > secret/unit-tester.json
+    - name: Start worker
+      working-directory: ./worker
+      env:
+        PARALLAX_GCP_SERVICE_ACCOUNT_KEY: "../secret/unit-tester.json"
+      run: |
+          cargo +${{ env.toolchain }} build
+          cargo +${{ env.toolchain }} run -- --disable-tls --enable-bootstrap &
+    - name: Install cli
+      working-directory: ./cli
+      run: |
+          cargo +${{ env.toolchain }} build && cp ../target/debug/parallax ../cli/test/parallax
+    - name: Run cli
+      working-directory: ./cli/test
+      run: |
+        ./parallax init
+        ./parallax --disable-tls gov fetch > "$(date +%s).yaml"
+        ./parallax --disable-tls gov apply --no-confirm
+        echo "select vocabulary_id from patient_data.vocabulary | ./parallax --disable-tls jobs query"
