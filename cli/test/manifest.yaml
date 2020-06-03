@@ -1,38 +1,68 @@
+- user:
+    name: "unit-tester"
+    email: "unit-tester@openquery.io"
+    super_user: true
+    public_keys:
+    - |
+      -----BEGIN PUBLIC KEY-----
+      MIIBCgKCAQEAxV3TnMIkVGe0967ODyM8LdD6RcxMblMKFIhxAK4tLKepyCyq3YlZ
+      S+ckNFvY0kMA29NOKe0N0Of7XpNA4RBaFARnAQS+pfcP+BxBYqKl6mvXS+P8TKO3
+      J8guqebVn/d8BNAYLEzSmmHo+d4xpzyUdli9JKvgiaG+9mN/riHyu7/AY00BL/by
+      17F4rdL5w08H22eSoq2uJSr4yLlhFDdWzIL9TQz7K61o85FNiiV5yEATC6/ExWAD
+      3va11Y4GUCp2fmNhexrDQXsGbFW+SWmdZA55iXO31H42iYX2HqF8wz3Lsy7n0Aa8
+      UgsxcBbkPp5oLYdEffgdeBtdnuu73oVcGQIDAQAB
+      -----END PUBLIC KEY-----
+    primary_group: resource.group.wheel
+
 - backend:
     big_query:
-      name: "a_bigquery_backend"
-      service_account_key: "../../secret/unit-tester.json"
-      project_id: "openquery-dev"
-      dataset_id: "yelp"
+      name: "synthetic_patient_data"
+      service_account_key: "../secret/unit-tester.json"
+      project_id: "bigquery-public-data"
+      dataset_id: "cms_synthetic_patient_data_omop"
       staging_project_id: "openquery-dev"
-      staging_dataset_id: "cache"
+      # The BigQuery dataset used as staging area for BigQuery datasets.
+      # It needs to be in the same region as all the datasets involved in
+      # a query (this is a BigQuery limitation).
+      staging_dataset_id: "cache_us"
 
 - dataset:
-    name: "yelp"
+    name: "patient_data"
     data:
-    - resource.backend.big_query.a_bigquery_backend.data["review"]
-    - resource.backend.big_query.a_bigquery_backend.data["business"]
+    - resource.backend.big_query.synthetic_patient_data.data["person"]
+    - resource.backend.big_query.synthetic_patient_data.data["care_site"]
+    - resource.backend.big_query.synthetic_patient_data.data["vocabulary"]
+    - resource.backend.big_query.synthetic_patient_data.data["location"]
     entities: []
     policy_bindings:
-    - name: "group1_policies"
+    - name: "wheel_policies"
       groups:
       - resource.group.wheel
       policies:
-      - policy.whitelist.business_id_is_whitelisted
-      - policy.obfuscate.review_id_is_obfuscated
-      - policy.hash.user_id_is_hashed
+      - policy.differential_privacy.patients_have_differential_privacy
+      - policy.hash.care_sites_are_hashed
+      - policy.whitelist.vocabulary_is_whitelisted
+      - policy.obfuscate.addresses_are_obfuscated
       priority: 10
     policies:
-    - whitelist:
-        name: "business_id_is_whitelisted"
-        fields:
-        - "business_id"
-    - obfuscate:
-        name: "review_id_is_obfuscated"
-        fields:
-        - "review_id"
+    - differential_privacy:
+        name: "patients_have_differential_privacy"
+        entity: "person_id"
+        epsilon: 1.0
+        bucket_size: 15
     - hash:
-        name: "user_id_is_hashed"
-        salt: []
+        name: "care_sites_are_hashed"
         fields:
-        - "user_id"
+        - "care_site_name"
+        salt: []
+    - obfuscate:
+        name: "addresses_are_obfuscated"
+        fields:
+        - "address_1"
+        - "address_2"
+    - whitelist:
+        name: "vocabulary_is_whitelisted"
+        fields:
+        - "vocabulary_id"
+        - "vocabulary_name"
+        - "vocabulary_reference"

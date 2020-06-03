@@ -22,7 +22,7 @@
 - backend:
     big_query:
       name: "synthetic_patient_data"
-      service_account_key: "../../secret/unit-tester.json"
+      service_account_key: "../secret/unit-tester.json"
       project_id: "bigquery-public-data"
       dataset_id: "cms_synthetic_patient_data_omop"
       staging_project_id: "openquery-dev"

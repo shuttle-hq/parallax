@@ -88,9 +88,9 @@ chrono = { version = "0.4", features = ["serde"] }
 
 sqlparser = "*"
 
-entish = { git = "git@github.com:openquery-io/entish.git" }
+entish = { git = "https://github.com/openquery-io/entish.git" }
 
-jac = { git = "git@github.com:openquery-io/jac.git", features = [ "redis-backend" ] }
+jac = { git = "https://github.com/openquery-io/jac.git", features = [ "redis-backend" ] }
 
 parallax-api = { path = "../api" }
 
