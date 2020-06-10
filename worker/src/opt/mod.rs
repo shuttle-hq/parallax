@@ -203,10 +203,18 @@ impl ContextKey {
         iter
     }
     pub fn root(&self) -> Option<&str> {
+        // TODO Shouldn't this be 0?
         if self.0.len() == 1 {
             None
         } else {
             self.0.last().map(|s| s.as_str())
+        }
+    }
+    pub fn at_depth(&self, index: usize) -> Option<&str> {
+        if self.0.len() < index {
+            None
+        } else {
+            self.0.get(index).map(|s| s.as_str())
         }
     }
     pub fn and_prefix(mut self, prefix: &str) -> Self {

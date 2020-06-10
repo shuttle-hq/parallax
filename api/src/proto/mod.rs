@@ -10,6 +10,11 @@ pub mod parallax {
                 tonic::include_proto!("parallax.service.resource.v1");
             }
         }
+        pub mod catalog {
+            pub mod v1 {
+                tonic::include_proto!("parallax.service.catalog.v1");
+            }
+        }
     }
     pub mod config {
         pub mod resource {

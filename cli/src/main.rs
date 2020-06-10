@@ -30,6 +30,8 @@ mod gov;
 
 mod job;
 
+mod catalog;
+
 use crate::job::Fetch;
 use parallax_api::Job;
 use parallax_api::JobState;
@@ -98,6 +100,11 @@ enum Command {
     Jobs {
         #[structopt(subcommand)]
         subcmd: JobSubCommand,
+    },
+    #[structopt(about = "Explore the Parallax virtual datasets")]
+    Catalog {
+        #[structopt(subcommand)]
+        subcmd: CatalogSubCommand,
     },
 }
 
@@ -169,6 +176,17 @@ enum GovSubCommand {
             help = "the file to store the fetched state into (stdout if not set)"
         )]
         output: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Clone, StructOpt)]
+enum CatalogSubCommand {
+    #[structopt(about = "List virtual datasets", visible_alias = "ls")]
+    List {
+        #[structopt(
+            about = "the pattern used to identify a virtual resource. Can be empty, <dataset> or <dataset>.<table>"
+        )]
+        pattern: Option<String>,
     },
 }
 
@@ -468,6 +486,12 @@ async fn main() -> Result<()> {
                 };
                 let fetch = job::Fetch::query(&mut client, &job, timeout);
                 output_rows(output, format, truncate, fetch).await?
+            }
+        },
+        Command::Catalog { subcmd } => match subcmd {
+            CatalogSubCommand::List { pattern } => {
+                let mut client = config.new_client(opt.disable_tls).await?;
+                catalog::ls(&mut client, pattern).await?;
             }
         },
     }

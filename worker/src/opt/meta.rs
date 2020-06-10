@@ -3,6 +3,7 @@ use crate::common::{Deserialize, Serialize};
 use entish::prelude::*;
 
 pub use super::*;
+use core::fmt;
 
 pub trait RelRepr<E>: Sized + Send + Sync {
     fn dot(node: GenericRel<&E, &Self>) -> ValidateResult<Self>;
@@ -435,6 +436,15 @@ impl ExprRepr for HashSet<BlockType> {
 pub enum Mode {
     Nullable,
     Required,
+}
+
+impl fmt::Display for Mode {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            Mode::Nullable => write!(f, "Nullable"),
+            Mode::Required => write!(f, "Required"),
+        }
+    }
 }
 
 impl Default for Mode {

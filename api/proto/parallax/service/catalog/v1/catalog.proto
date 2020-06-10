@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+package parallax.service.catalog.v1;
+
+import "google/api/annotations.proto";
+
+
+service CatalogService {
+    rpc GetVirtualDatasets (GetVirtualDatasetsRequest) returns (GetVirtualDatasetsResponse) {
+        option (google.api.http) = {
+            get: "/v1/catalog/virtual-datasets"
+        };
+    }
+    rpc GetVirtualTables (GetVirtualTablesRequest) returns (GetVirtualTablesResponse) {
+        option (google.api.http) = {
+            get: "/v1/catalog/virtual-datasets/{datasetId}/tables"
+        };
+    }
+    rpc GetVirtualTableSchema (GetVirtualTableSchemaRequest) returns (GetVirtualTableSchemaResponse) {
+        option (google.api.http) = {
+            get: "/v1/catalog/virtual-datasets/{datasetId}/tables/{tableId}"
+        };
+    }
+}
+
+// Dataset related messages
+message GetVirtualDatasetsRequest {
+}
+
+message GetVirtualDatasetsResponse {
+    repeated VirtualDataset virtual_datasets = 1;
+}
+
+message VirtualDataset {
+    string name = 1;
+}
+
+// Table related messages
+message GetVirtualTablesRequest {
+    string datasetId = 1;
+}
+
+message GetVirtualTablesResponse {
+    repeated VirtualTable virtual_tables = 1;
+}
+
+message VirtualTable {
+    string name = 1;
+}
+
+// Table schema related messages
+message GetVirtualTableSchemaRequest {
+    string datasetId = 1;
+    string tableId = 2;
+}
+
+message GetVirtualTableSchemaResponse {
+    repeated VirtualColumn virtual_columns = 1;
+}
+
+message VirtualColumn {
+    string name = 1;
+    string ty = 2;
+    string mode = 3;
+}

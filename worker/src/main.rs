@@ -44,7 +44,7 @@ use std::sync::{Arc, Mutex};
 pub use futures::compat::{Future01CompatExt, Stream01CompatExt};
 use futures::prelude::*;
 
-use parallax_api::{JobServiceServer, ResourceServiceServer};
+use parallax_api::{CatalogServiceServer, JobServiceServer, ResourceServiceServer};
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 
 mod backends;
@@ -64,6 +64,7 @@ mod opt;
 mod gcp;
 
 mod rpc;
+use crate::rpc::catalog::CatalogServiceImpl;
 use crate::rpc::{JobServiceImpl, ResourceServiceImpl};
 
 mod common;
@@ -109,6 +110,9 @@ pub async fn serve_rpc<A: AccessProvider + 'static>(
     builder
         .add_service(JobServiceServer::new(JobServiceImpl::new(access.clone())))
         .add_service(ResourceServiceServer::new(ResourceServiceImpl::new(
+            access.clone(),
+        )))
+        .add_service(CatalogServiceServer::new(CatalogServiceImpl::new(
             access.clone(),
         )))
         .serve(bound)

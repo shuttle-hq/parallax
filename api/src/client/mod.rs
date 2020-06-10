@@ -8,8 +8,9 @@ use crate::tonic::{
 };
 use http::uri::InvalidUri;
 
-use crate::{JobServiceClient, ResourceServiceClient};
+use crate::{CatalogServiceClient, JobServiceClient, ResourceServiceClient};
 
+use crate::proto::parallax::service::catalog::v1::*;
 use crate::proto::parallax::service::job::v1::*;
 use crate::proto::parallax::service::resource::v1::*;
 
@@ -20,6 +21,7 @@ pub use auth::{
 
 pub const DEFAULT_JOB_PORT: u16 = 6477;
 pub const DEFAULT_RESOURCE_PORT: u16 = 6477;
+pub const DEFAULT_CATALOG_PORT: u16 = 6477;
 
 #[derive(Debug)]
 pub enum BuilderError {
@@ -48,6 +50,8 @@ pub struct ClientBuilder {
     job_port: Option<u16>,
     resource_host: Option<String>,
     resource_port: Option<u16>,
+    catalog_host: Option<String>,
+    catalog_port: Option<u16>,
     authenticator: Option<Authenticator>,
     client_tls_config: Option<ClientTlsConfig>,
     disable_tls: bool,
@@ -70,14 +74,24 @@ impl ClientBuilder {
         self.resource_port = Some(port);
         self
     }
+    pub fn catalog_host<A: AsRef<str>>(mut self, addr: A) -> Self {
+        self.catalog_host = Some(addr.as_ref().to_string());
+        self
+    }
+    pub fn catalog_port(mut self, port: u16) -> Self {
+        self.catalog_port = Some(port);
+        self
+    }
     /// Sets both `job_host` and `resource_host` to the same `addr`
     pub fn host<A: AsRef<str>>(self, addr: A) -> Self {
         let addr = addr.as_ref().to_string();
-        self.job_host(&addr).resource_host(&addr)
+        self.job_host(&addr)
+            .resource_host(&addr)
+            .catalog_host(&addr)
     }
     /// Sets both `job_port` and `resource_port` to the same `port`
     pub fn port(self, port: u16) -> Self {
-        self.job_port(port).resource_port(port)
+        self.job_port(port).resource_port(port).catalog_port(port)
     }
     pub fn client_tls_config(mut self, config: ClientTlsConfig) -> Self {
         self.client_tls_config = Some(config);
@@ -91,11 +105,13 @@ impl ClientBuilder {
         self.authenticator = Some(authenticator);
         self
     }
+
     pub async fn build(self) -> Result<Client, BuilderError> {
         let scheme = if self.disable_tls { "http" } else { "https" };
 
         let client_config = self.client_tls_config.unwrap_or(ClientTlsConfig::new());
 
+        // job client -----------
         let job_endpoint_uri = format!(
             "{}://{}:{}",
             scheme,
@@ -115,6 +131,7 @@ impl ClientBuilder {
             .await
             .map_err(|e| BuilderError::Tonic(e))?;
 
+        // resource client -----------
         let resource_endpoint_uri = format!(
             "{}://{}:{}",
             scheme,
@@ -135,11 +152,33 @@ impl ClientBuilder {
             .await
             .map_err(|e| BuilderError::Tonic(e))?;
 
+        // catalog client -----------
+        let catalog_endpoint_uri = format!(
+            "{}://{}:{}",
+            scheme,
+            self.catalog_host.unwrap_or("127.0.0.1".to_string()),
+            self.catalog_port.unwrap_or(DEFAULT_CATALOG_PORT)
+        );
+
+        let mut catalog_endpoint: Endpoint =
+            catalog_endpoint_uri.try_into().map_err(|e: InvalidUri| {
+                BuilderError::Invalid("catalog endpoint uri", e.to_string())
+            })?;
+
+        if !self.disable_tls {
+            catalog_endpoint = catalog_endpoint.tls_config(client_config.clone());
+        }
+
+        let catalog = CatalogServiceClient::connect(catalog_endpoint)
+            .await
+            .map_err(|e| BuilderError::Tonic(e))?;
+
         let authenticator = self.authenticator;
 
         Ok(Client {
             job,
             resource,
+            catalog,
             authenticator,
         })
     }
@@ -148,6 +187,7 @@ impl ClientBuilder {
 pub struct Client {
     pub job: JobServiceClient<Channel>,
     pub resource: ResourceServiceClient<Channel>,
+    pub catalog: CatalogServiceClient<Channel>,
     authenticator: Option<Authenticator>,
 }
 
@@ -202,6 +242,14 @@ impl Client {
             create_resource: CreateResourceRequest, CreateResourceResponse,
             update_resource: UpdateResourceRequest, UpdateResourceResponse,
             delete_resource: DeleteResourceRequest, DeleteResourceResponse,
+        }
+    }
+
+    impl_client! {
+        catalog {
+            get_virtual_datasets: GetVirtualDatasetsRequest, GetVirtualDatasetsResponse,
+            get_virtual_tables: GetVirtualTablesRequest, GetVirtualTablesResponse,
+            get_virtual_table_schema: GetVirtualTableSchemaRequest, GetVirtualTableSchemaResponse,
         }
     }
 }

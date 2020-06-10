@@ -14,6 +14,11 @@ pub mod proto;
 pub mod client;
 
 pub use proto::parallax::service::{
+    catalog::v1::{
+        catalog_service_client::CatalogServiceClient,
+        catalog_service_server::{CatalogService, CatalogServiceServer},
+        *,
+    },
     job::v1::{
         job_service_client::JobServiceClient,
         job_service_server::{JobService, JobServiceServer},

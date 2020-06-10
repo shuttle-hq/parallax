@@ -5,7 +5,8 @@ macro_rules! with_type_attributes {
         label: [$($lid:tt,)*],
         try_into: [$($tid:tt,)*],
         from_primitive: [$($fpid:tt,)*],
-        serde: [$($sid:tt,)*]
+        serde: [$($sid:tt,)*],
+        dto: [$($did:tt,)*],
     } => {
         tonic_build::configure()
             .format(false)
@@ -49,6 +50,12 @@ macro_rules! with_type_attributes {
                     "#[serde(rename_all = \"snake_case\")]"
                 )
             )*
+            $(
+                .type_attribute(
+                    $did,
+                    "#[derive(Hash, Eq)]"
+                )
+           )*
     }
 }
 
@@ -85,7 +92,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ".parallax.service.resource",
             ".parallax.service.job",
             ".parallax.type.error",
-        ]
+        ],
+        dto: [
+            "VirtualDataset",
+            "VirtualTable",
+            "VirtualColumn",
+        ],
     };
     config.compile(
         &[
@@ -93,6 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "proto/parallax/service/job/v1/job.proto",
             "proto/parallax/service/resource/v1/resource.proto",
             "proto/parallax/type/error/v1/error.proto",
+            "proto/parallax/service/catalog/v1/catalog.proto",
         ],
         &["proto/", "../third-party/googleapis"],
     )?;
