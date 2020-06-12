@@ -10,51 +10,7 @@
 
 At a high-level, [`Parallax`] works by recursively pattern-matching and transforming input user queries to adhere to the administrator's policies.
 
-This is what a typical manifest for a dataset looks like this:
-```yaml
-- dataset:
-    name: "safe_dataset"
-
-    data:
-    - resource.backend.big_query.london_bicycles.data["cycle_hire"]
-    - resource.backend.big_query.london_bicycles.data["cycle_stations"]
-
-    policy_bindings:
-    - name: "default_view"
-      groups:
-      - resource.group.wheel
-      policies:
-      - policy.whitelist.abstract_trips_are_ok
-      - policy.obfuscate.station_names_should_be_obfuscated
-      - policy.obfuscate.names_should_be_obfuscated
-      - policy.obfuscate.locations_should_be_obfuscated
-      priority: 10
-    
-    policies:
-    - whitelist:
-        name: "abstract_trips_are_ok"
-        fields:
-        - "start_date"
-        - "end_date"
-        - "start_station_id"
-        - "end_station_id"
-        - "rental_id"
-    - obfuscate:
-        name: "station_names_should_be_obfuscated"
-        fields:
-        - "start_station_name"
-        - "end_station_name"
-    - obfuscate:
-        name: "names_should_be_obfuscated"
-        fields:
-        - "name"
-    - obfuscate:
-        name: "locations_should_be_obfuscated"
-        fields:
-        - "longitude"
-        - "latitude"
-```
-A full end-to-end working example using this manifest is shown below.
+Parallax then re-writes queries into semantically equivalent private queries which are executed against the underlying backend.
 
 ## Getting started
 
@@ -165,7 +121,7 @@ Unless you explicitly state otherwise, any contribution intentionally submitted 
 terms or conditions.
 
 
-[`Parallax`]: https://github.com/openquery-io/core/tree/master/parallax
+[`Parallax`]: https://github.com/openquery-io/parallax
 [`parallax-worker`]: ./worker
 [`example/manifest`]: ./example/manifest
 [`london_bicycles`]: https://console.cloud.google.com/marketplace/details/greater-london-authority/london-bicycles?filter=solution-type:dataset&id=95374cac-2834-4fa2-a71f-fc033ccb5ce4
