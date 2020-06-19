@@ -113,10 +113,12 @@ pub async fn context<A: Access>(access: &A) -> Result<Context<TableMeta>> {
                         .to_meta()
                         .await?;
 
-                    table_meta.loc = Some(backend_block.clone());
-
                     let context_key =
                         ContextKey::with_name(data_in_context.name()).and_prefix(dataset_name);
+
+                    table_meta.loc = Some(backend_block.clone());
+                    table_meta.provenance = Some(context_key.clone());
+
                     Ok((context_key, table_meta))
                 }))
                 .await;

@@ -153,7 +153,7 @@ pub mod tests {
 
     use std::path::Path;
 
-    const SERVICE_ACCOUNT_KEY: &'static str = env!("PARALLAX_GCP_SERVICE_ACCOUNT_KEY");
+    const SERVICE_ACCOUNT_KEY: &'static str = env!("GOOGLE_APPLICATION_CREDENTIALS");
 
     pub fn mk_connector() -> impl GetToken {
         oauth::Connector::builder()

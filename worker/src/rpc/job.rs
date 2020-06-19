@@ -499,6 +499,18 @@ mod tests {
     }
 
     #[test]
+    fn query_rpc_insert_aggregation_job_and_it_completes() {
+        let job = insert_job_and_get(
+            "SELECT state, COUNT(DISTINCT location_id) \
+             FROM patient_data.location \
+             GROUP BY state",
+        );
+        let status = job.status.unwrap();
+        assert_eq!(status.state, JobState::Done as i32);
+        assert!(status.final_error.is_none());
+    }
+
+    #[test]
     fn query_rpc_insert_job_but_it_is_forbidden() {
         let job = insert_job_and_get("SELECT * FROM patient_data.person");
         let status = job.status.unwrap();

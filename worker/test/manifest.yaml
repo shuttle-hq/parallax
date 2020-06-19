@@ -49,6 +49,12 @@
       - policy.whitelist.vocabulary_is_whitelisted
       - policy.obfuscate.addresses_are_obfuscated
       priority: 10
+    - name: "aggregation_policies"
+      groups:
+      - resource.group.wheel
+      policies:
+      - policy.aggregation.locations_need_aggregated
+      priority: 5
     policies:
     - differential_privacy:
         name: "patients_have_differential_privacy"
@@ -71,3 +77,7 @@
         - "vocabulary_id"
         - "vocabulary_name"
         - "vocabulary_reference"
+    - aggregation:
+        name: "locations_need_aggregated"
+        entity: "location_id"
+        minimum_bucket_size: 15

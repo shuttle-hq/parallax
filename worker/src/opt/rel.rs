@@ -751,6 +751,7 @@ pub struct TableMeta {
     pub columns: Context<ExprMeta>,
     pub loc: Option<BlockType>,
     pub source: Option<ContextKey>,
+    pub provenance: Option<ContextKey>,
     pub audience: HashSet<BlockType>,
 }
 
@@ -790,6 +791,21 @@ impl RelRepr<ExprMeta> for TableMeta {
             None
         };
 
+        let mut provenances = Vec::new();
+        match &node {
+            GenericRel::Table(Table(context_key)) => {
+                provenances.push(context_key);
+            }
+            _ => {
+                node.map(&mut |child| {
+                    if let Some(provenance) = child.provenance.as_ref() {
+                        provenances.push(provenance);
+                    }
+                });
+            }
+        };
+        let provenance = ContextKey::common(provenances);
+
         let mut audiences = Vec::new();
         match node {
             GenericRel::Projection(Projection { attributes, .. }) => attributes
@@ -815,6 +831,7 @@ impl RelRepr<ExprMeta> for TableMeta {
             columns,
             loc,
             source,
+            provenance,
             audience,
         })
     }

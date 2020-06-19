@@ -282,6 +282,121 @@ impl RelTransform for DifferentialPrivacyPolicy {
 }
 
 #[async_trait]
+impl RelTransform for AggregationPolicy {
+    async fn transform_rel<A: Access>(
+        &self,
+        rel: &RelT,
+        access: &A,
+    ) -> Result<Costly<RelT>, Error> {
+        match rel.as_ref() {
+            GenericRel::Aggregation(Aggregation {
+                attributes,
+                group_by,
+                from,
+            }) => {
+                let entity_key = ContextKey::with_name(&self.entity);
+                let entity_alias_str = format!("policy_{}", entity_key.name());
+                let entity_alias = ContextKey::with_name(&entity_alias_str);
+                let ctx = access.context().await.unwrap();
+                let rewritten: RelT = rel
+                    .clone()
+                    .try_fold(&mut |child| match child {
+                        GenericRel::Table(Table(context_key)) => {
+                            let table_meta = ctx.get(&context_key).unwrap();
+                            let columns = table_meta.to_context();
+                            if columns.get_column(&entity_key).is_ok() {
+                                Ok(RelT {
+                                    root: GenericRel::Table(Table(context_key)),
+                                    board: Ok(table_meta.clone()),
+                                })
+                            } else {
+                                Err(Error::NoMatch)
+                            }
+                        }
+                        GenericRel::Projection(Projection { attributes, from }) => {
+                            let mut attributes = attributes.clone();
+                            attributes.push(ExprT::from(Expr::Column(Column(entity_key.clone()))));
+                            Ok(RelT::from(GenericRel::Projection(Projection {
+                                attributes,
+                                from,
+                            })))
+                        }
+                        GenericRel::Aggregation(Aggregation {
+                            attributes,
+                            from,
+                            group_by,
+                        }) => {
+                            let mut attributes = attributes
+                                .iter()
+                                .cloned()
+                                .enumerate()
+                                .map(|(i, expr)| {
+                                    ExprT::from(Expr::As(As {
+                                        expr,
+                                        alias: format!("f{}_", i),
+                                    }))
+                                })
+                                .collect::<Vec<_>>();
+                            attributes.push(ExprT::from(Expr::As(As {
+                                expr: ExprT::from(Expr::Function(Function {
+                                    name: FunctionName::Count,
+                                    args: vec![ExprT::from(Expr::Column(Column(
+                                        entity_key.clone(),
+                                    )))],
+                                    distinct: true,
+                                })),
+                                alias: entity_alias.name().to_string(),
+                            })));
+                            Ok(RelT::from(GenericRel::Aggregation(Aggregation {
+                                attributes,
+                                from,
+                                group_by,
+                            })))
+                        }
+                        _ => Ok(RelT::from(child)),
+                    })
+                    .unwrap();
+
+                let rewritten = RebaseRel::<'_, TableMeta>::rebase(&ctx, &rewritten).await; // repair it
+
+                let board = rewritten.board.as_ref().map_err(|_| Error::NoMatch)?;
+
+                if board.to_context().get(&entity_alias).is_ok() {
+                    let where_ = ExprT::from(Expr::BinaryOp(BinaryOp {
+                        left: ExprT::from(Expr::Column(Column(entity_alias))),
+                        op: BinaryOperator::Gt,
+                        right: ExprT::from(Expr::Literal(Literal(LiteralValue::Long(
+                            self.minimum_bucket_size as i64,
+                        )))),
+                    }));
+                    let num_cols = board.columns.len();
+                    let new_root = RelT::from(GenericRel::Projection(Projection {
+                        from: RelT::from(GenericRel::Selection(Selection {
+                            from: rewritten,
+                            where_,
+                        })),
+                        attributes: {
+                            (0..(num_cols - 1))
+                                .into_iter()
+                                .map(|i| {
+                                    let context_key = ContextKey::with_name(&format!("f{}_", i));
+                                    ExprT::from(Expr::Column(Column(context_key)))
+                                })
+                                .collect::<Vec<_>>()
+                        },
+                    }));
+                    let new_root = RebaseRel::<'_, TableMeta>::rebase(&ctx, &new_root).await;
+                    Ok(new_root.into())
+                } else {
+                    Err(Error::NoMatch)
+                }
+            }
+            _ => Err(Error::NoMatch),
+        }
+    }
+}
+
+#[async_trait]
 impl RelTransform for Policy {
     async fn transform_rel<A: Access>(
         &self,
@@ -291,6 +406,9 @@ impl RelTransform for Policy {
         match &self.0 {
             policy::Policy::DifferentialPrivacy(differential_privacy) => {
                 differential_privacy.transform_rel(rel, access).await
+            }
+            policy::Policy::Aggregation(aggregation) => {
+                aggregation.transform_rel(rel, access).await
             }
             _ => Err(Error::NoMatch),
         }
@@ -433,27 +551,38 @@ where
                     }
                 }
                 _ => {
-                    // there might be a need for filtering of policies here,
-                    // or to force fully qualifying entities in the policy setup
-                    let mut candidates = Vec::new();
-                    for (key, binding) in self.bindings.iter() {
-                        for policy in binding.policies.iter() {
-                            match policy.transform_rel(rel_t, self.access).await {
-                                Ok(Costly { mut root, cost }) => {
-                                    root.board
-                                        .as_mut()
-                                        .map(|board| board.audience.insert(self.audience.clone()))
-                                        .map_err(|e| Error::Validate(e.clone()))?;
-                                    let transformed =
-                                        Transformed::new(root, key, cost, binding.priority);
-                                    candidates.push(transformed);
+                    let provenance = rel_t
+                        .board
+                        .as_ref()
+                        .map_err(|e| Error::Validate(e.clone()))?
+                        .provenance
+                        .as_ref();
+                    if let Some(provenance) = provenance {
+                        let bindings = self.filter_bindings(provenance);
+                        let mut candidates = Vec::new();
+                        for (key, binding) in bindings.iter() {
+                            for policy in binding.policies.iter() {
+                                match policy.transform_rel(rel_t, self.access).await {
+                                    Ok(Costly { mut root, cost }) => {
+                                        root.board
+                                            .as_mut()
+                                            .map(|board| {
+                                                board.audience.insert(self.audience.clone())
+                                            })
+                                            .map_err(|e| Error::Validate(e.clone()))?;
+                                        let transformed =
+                                            Transformed::new(root, key, cost, binding.priority);
+                                        candidates.push(transformed);
+                                    }
+                                    Err(Error::NoMatch) => {}
+                                    Err(err) => return Err(err),
                                 }
-                                Err(Error::NoMatch) => {}
-                                Err(err) => return Err(err),
                             }
                         }
+                        candidates
+                    } else {
+                        vec![]
                     }
-                    candidates
                 }
             };
 
@@ -755,5 +884,20 @@ pub mod tests {
         // For now this is enough in order to check that diff priv was triggered
         // as it is the only policy with an associated cost
         assert!(*rel_t.cost.values().next().unwrap() > 0f64);
+    }
+
+    #[test]
+    fn transform_aggregation() {
+        let rel_t = test_transform_for(
+            "\
+            SELECT state, COUNT(DISTINCT location_id) \
+            FROM patient_data.location \
+            GROUP BY state \
+            ",
+        );
+        let table_meta = rel_t.root.board.unwrap();
+        assert!(table_meta
+            .audience
+            .contains(&block_type!("resource"."group"."wheel")));
     }
 }

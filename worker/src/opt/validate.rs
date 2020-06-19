@@ -509,7 +509,6 @@ pub mod tests {
 
     #[test]
     fn validate_group_by() {
-        crate::tests::setup_test();
         let rel_t = test_validate_for(
             "\
             SELECT race_concept_id, COUNT(person_id) \

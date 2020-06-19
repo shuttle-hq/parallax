@@ -193,7 +193,16 @@ message Policy {
     HashPolicy hash = 2;
     ObfuscatePolicy obfuscate = 3;
     DifferentialPrivacyPolicy differential_privacy = 4;
+    AggregationPolicy aggregation = 5;
   }
+}
+
+message AggregationPolicy {
+  string name = 1;
+  reserved 2 to 5;
+
+  string entity = 6;
+  uint64 minimum_bucket_size = 8;
 }
 
 message DifferentialPrivacyPolicy {

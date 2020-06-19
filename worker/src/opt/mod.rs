@@ -197,6 +197,28 @@ impl ContextKey {
     pub fn iter(&self) -> impl Iterator<Item = &str> {
         self.0.iter().map(|s| s.as_str())
     }
+    pub fn common<'a, I: IntoIterator<Item = &'a Self>>(from: I) -> Option<Self> {
+        let mut iter = from.into_iter();
+        let mut common = iter.next()?.0.clone();
+        common.reverse();
+        for context_key in iter {
+            for (i, part) in context_key.0.iter().rev().enumerate() {
+                if let Some(com) = common.get(i) {
+                    if com != part {
+                        common.split_off(i);
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+        common.reverse();
+        if !common.is_empty() {
+            Some(Self(common))
+        } else {
+            None
+        }
+    }
     pub fn prefix(&self) -> impl Iterator<Item = &str> {
         let mut iter = self.0.iter().map(|s| s.as_str());
         iter.next();
@@ -323,12 +345,6 @@ pub struct Context<M> {
     ctx: Vec<(ContextKey, M)>,
 }
 
-#[async_trait]
-pub trait Contextish {
-    type M;
-    async fn get(&self, key: &ContextKey) -> Result<&Self::M, ContextError>;
-}
-
 impl<M> Default for Context<M> {
     fn default() -> Self {
         Self { ctx: Vec::new() }
@@ -449,6 +465,10 @@ impl<M> Context<M> {
 
     pub fn insert(&mut self, key: ContextKey, m: M) {
         self.ctx.push((key, m))
+    }
+
+    pub fn len(&self) -> usize {
+        self.ctx.len()
     }
 
     pub fn get(&self, key: &ContextKey) -> Result<&M, ContextError> {
